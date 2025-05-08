@@ -6,7 +6,7 @@ The standard nh_core version has been temporarily separated into two files
  nh_core.F90
  nh_utils.F90
  
- Oct-Nov 2022 SIVAY: updates for FV3WAM #ifdef MULTI_GASES
+ Oct-Nov 2022 Valery Yudin CUA: review and updates for FV3WAM #ifdef MULTI_GASES
  
  1) kappa-correction in fv_dynamics.F90
  1a)                    multi_gases.F90, corrections for allocation of cpi, ri, cvi [ncnst-1]  
@@ -29,6 +29,13 @@ The standard nh_core version has been temporarily separated into two files
 
   
 ===========================================  
+This option is retired due to VL-surface nature that does not accept vertical mixing
+   for NH-equations
+==========================================
  2) dissipative solver for #ifdef MULTI_GASES FV3WAM
-    on perturbations of "non-hydrostatic pressure" and
-                        vertical winds W
+    on perturbations of "non-hydrostatic pressure" and vertical winds W
+==========================================
+
+The new dynamics-physics coupling for FV3WAM-SLES will be in the new branch
+vay_fv3sles
+
