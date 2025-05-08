@@ -33,7 +33,7 @@ This option is retired due to VL-surface nature that does not accept vertical mi
    for NH-equations
 ==========================================
  2) dissipative solver for #ifdef MULTI_GASES FV3WAM
-    on perturbations of "non-hydrostatic pressure" and vertical winds W
+    on perturbations of "non-hydrostatic pressure" and vertical winds
 ==========================================
 
 The new dynamics-physics coupling for FV3WAM-SLES will be in the new branch
