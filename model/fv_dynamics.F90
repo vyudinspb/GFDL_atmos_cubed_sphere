@@ -162,7 +162,7 @@ module fv_dynamics_mod
 #ifdef MULTI_GASES
    use multi_gases_mod,  only:  virq, vicpq, virqd, vicpqd, num_gas
 #endif
-
+   use fv_grid_utils_mod,   only: c2l_ord2
 implicit none
    logical :: RF_initialized = .false.
    logical :: pt_initialized = .false.
@@ -200,7 +200,16 @@ contains
     use CCPP_data,         only: GFDL_interstitial
 
     use molecular_diffusion_mod, only:  molecular_diffusion_run
-
+    
+!=========================================================================================
+! 2026 May:   ufswam_med= .true. => dycore_disedmol_step is active for UFSWAM
+!             ufswam_daf= .true. => deep atmosphere formulation    for UFSWAM
+!     separate step of dycore for molecular-eddy/LES dissipation from the surf to the top
+!     ufswam_daf= .true. => no NGW-physics, GW-resolving runs for C384/C768
+! ========================================================================================
+   
+    use dycore_dis_moleddy_mod, only :  dycore_disedmol_step 
+     
     real, intent(IN) :: bdt  !< Large time-step
     real, intent(IN) :: consv_te
     real, intent(IN) :: kappa, cp_air
@@ -230,7 +239,11 @@ contains
     real, intent(inout) :: pt(  bd%isd:bd%ied  ,bd%jsd:bd%jed  ,npz)  !< temperature (K)
     real, intent(inout) :: delp(bd%isd:bd%ied  ,bd%jsd:bd%jed  ,npz)  !< pressure thickness (pascal)
     real, intent(inout) :: q(   bd%isd:bd%ied  ,bd%jsd:bd%jed  ,npz, ncnst) !< specific humidity and constituents
+!
+! delz domain allocation delz(bd%is:,bd%js:,1:) .... inconsistent to delp(bd%isd:bd%ied  ,bd%jsd:bd%jed  ,npz)
+!    
     real, intent(inout) :: delz(bd%is:,bd%js:,1:)   !< delta-height (m); non-hydrostatic only
+    
     real, intent(inout) ::  ze0(bd%is:, bd%js: ,1:) !< height at edges (m); non-hydrostatic
     real, intent(inout), dimension(bd%isd:bd%ied  ,bd%jsd:bd%jed,npz) :: diss_est! diffusion estimate for SKEB
 ! ze0 no longer used
@@ -260,7 +273,7 @@ contains
 
     type(inline_mp_type), intent(inout) :: inline_mp
 
-    real, intent(inout), dimension(bd%isd:bd%ied,bd%jsd:bd%jed,npz) :: grav_var
+    real, intent(inout), dimension(bd%isd:bd%ied,bd%jsd:bd%jed,npz)   :: grav_var
     real, intent(inout), dimension(bd%isd:bd%ied,bd%jsd:bd%jed,npz+1) :: grav_var_h
 
 ! Accumulated Mass flux arrays: the "Flux Capacitor"
@@ -284,18 +297,28 @@ contains
       real:: m_fac(bd%is:bd%ie,bd%js:bd%je)
       real:: pfull(npz)
       real, dimension(bd%is:bd%ie):: cvm
-      real, dimension(bd%is:bd%ie,bd%js:bd%je,npz) :: rdg
-      real, dimension(bd%is:bd%ie,bd%js:bd%je,npz+1) :: newrad
+
+!
+! make them allocatable
+!      
+      real, dimension(bd%is:bd%ie+1,bd%js:bd%je)         :: phis_v
+      real, dimension(bd%is:bd%ie,bd%js:bd%je+1)         :: phis_u
+      
+      real, dimension(bd%is:bd%ie,bd%js:bd%je,npz)       :: rdg        ! rdgas/gravity 
+      real, dimension(bd%is:bd%ie,bd%js:bd%je,npz+1)     :: newrad 
+         
+      real, dimension(bd%isd:bd%ied,bd%jsd:bd%jed,npz)   :: daf_a     
+      real, dimension(bd%isd:bd%ied+1,bd%jsd:bd%jed,npz) :: daf_dV
+      real, dimension(bd%isd:bd%ied,bd%jsd:bd%jed+1,npz) :: daf_dU      
+      
 #ifdef MULTI_GASES
       real, allocatable :: kapad(:,:,:)
       real, allocatable :: wam_kappain(:,:,:)  
       integer           :: ind_trkap    
       real              :: pcell, pkzcell, scal_kapcor                         
-!      real, allocatable :: kap_cor(:,:,:)       
-!      real, allocatable :: mol_kt(:,:,:)   
-!      real, allocatable :: mol_vu(:,:,:)    
 #endif
-      real t(bd%isd:bd%ied,bd%jsd:bd%jed)
+!!!      real t(bd%isd:bd%ied,bd%jsd:bd%jed)
+      
       real       :: correct, aave_t1, ttsave, tdsave
       real:: akap, ph1, ph2, mdt, gam, amdt, u0
       real:: recip_k_split,reg_bc_update_time
@@ -314,11 +337,21 @@ contains
       real :: time_total
       integer :: seconds, days
       real    :: wzkhyd, wzmhyd, rdg_dpdz
+!
+! ufswam_daf local variables
+! 
+      logical :: flag_geff
+      real    :: daf_fcos(bd%isd:bd%ied, bd%jsd:bd%jed) 
+      real    :: daf_fsin(bd%isd:bd%ied, bd%jsd:bd%jed)    
+      real    :: r_arad2, arad_zmet, grav_dafcor, grav_rad2
+      real    :: rgrav, arad_zmetU, arad_zmetV, delz_u, delz_v, aradU, aradV
+      real    :: ua_int, va_int, dwdt_mid, dwdt_int , wcv, wcu, dt2_rad, wom2 
+       
       real, dimension(:,:,:), pointer :: cappa
       real, dimension(:,:,:), pointer :: dp1
       real, dimension(:,:,:), pointer :: dtdt_m
       real, dimension(:,:), pointer :: te_2d
-
+ 
       cappa => GFDL_interstitial%cappa
       dp1 => GFDL_interstitial%te0
       dtdt_m => GFDL_interstitial%dtdt
@@ -334,8 +367,8 @@ contains
       ied = bd%ied
       jsd = bd%jsd
       jed = bd%jed
-
-
+      
+     
       cv_air =  cp_air - rdgas
       dt2 = 0.5*bdt
       k_split = flagstruct%k_split
@@ -343,34 +376,141 @@ contains
       nwat = flagstruct%nwat
       nq = nq_tot - flagstruct%dnats
       nr = nq_tot - flagstruct%dnrts
-
+      
+      rgrav = 1./grav
+      grav_rad2=grav*radius**2      
+      r_arad2  =0.5/radius
       grav_var_h = grav
-      grav_var = grav
+      grav_var  =  grav
       rdg_dpdz = -rdgas/grav
-      if(flagstruct%var_grav)then
+      rdg(:,:,:) = -rdgas*rgrav     
+      flag_geff = flagstruct%ufswam_geff
+      if(.not.flagstruct%ufswam_daf.and.flagstruct%var_grav)then
         do j=js,je
           do i=is,ie
-            newrad(i,j,npz+1) = radius + (phis(i,j)/grav)
-            grav_var_h(i,j,npz+1) = grav*((radius**2)/(newrad(i,j,npz+1)**2))
+            newrad(i,j,npz+1) = radius + phis(i,j)*rgrav
+            grav_var_h(i,j,npz+1) = grav*(radius/newrad(i,j,npz+1))**2
             do k=npz,1,-1
               newrad(i,j,k) = newrad(i,j,k+1) - delz(i,j,k)
-              grav_var_h(i,j,k) = grav*((radius**2)/(newrad(i,j,k)**2))
+              grav_var_h(i,j,k) = grav*(radius/newrad(i,j,k))**2
               grav_var(i,j,k) = .5*(grav_var_h(i,j,k+1)+grav_var_h(i,j,k))
               rdg(i,j,k) = -rdgas/grav_var(i,j,k)
             enddo
           enddo
         enddo
-      else
-        do k=1,npz
-          do j=js,je
-            do i=is,ie
-              rdg(i,j,k) = -rdgas/grav_var(i,j,k)
-            enddo
-          enddo
-        enddo
       endif
+      
+      call init_ijk_mem(isd,ied, jsd,jed,   npz, daf_a,  1.0)
+      call init_ijk_mem(isd,ied, jsd,jed+1, npz, daf_du, 1.0)
+      call init_ijk_mem(isd,ied+1, jsd,jed, npz, daf_dv, 1.0)
+      
+      if(flagstruct%ufswam_daf) then
+!  
+! ua/va -defined  else  call c2l_ord2(u, v, ua, va, gridstruct, npz, gridstruct%grid_type, bd, gridstruct%bounded_domain)
+! 
+	 ua_int =0.0
+	 va_int =0.0
+	 dwdt_mid =0.0
+	 dwdt_int =0.0 
+	 
+	do j=js,je+1
+	 do i=is,ie
+	  phis_u(i,j) = .5*(phis(i, j-1)+phis(i, j))
+	 enddo 
+	enddo
+	do j=js,je
+	 do i=is,ie+1
+	  phis_v(i,j) = .5*(phis(i-1, j)+phis(i, j))
+	 enddo 
+	enddo	
+	
+        do j=js,je	  
+          do i=is,ie	
+	  
+	   daf_fcos(i,j) =2.*omega*gridstruct%cosa(i,j)
+	   daf_fsin(i,j) =2.*omega*gridstruct%sina(i,j)	  
+	   	       
+	    arad_zmet =  radius + phis(i,j)*rgrav
+	    arad_zmetU = radius + phis_u(i,j)*rgrav
+	    arad_zmetV = radius + phis_v(i,j)*rgrav
+	    
+            newrad(i,j,npz+1) = arad_zmet
+            grav_var_h(i,j,npz+1) = grav_rad2/arad_zmet/arad_zmet
+	    		    
+           do k=npz,2,-1
+	      ua_int = .5*(ua(i,j,k)+ ua(i,j,k-1))
+	      va_int = .5*(va(i,j,k)+ va(i,j,k-1))
+	      arad_zmet = newrad(i,j,k+1) - delz(i,j,k)
+!	      
+!	      delz_u, delz_v, aradU, aradV
+!
+              delz_u =delz(i,j,k)
+	      delz_v =delz_u
+              if (i > 1 ) delz_v =.5*(delz_v +delz(i-1, j, k))
+	      if (j > 1 ) delz_u =.5*(delz_u +delz(i, j-1, k))
+	      aradU = arad_zmetU -delz_u
+	      aradV = arad_zmetV -delz_v
+              newrad(i,j,k) = arad_zmet
+!	      
+! interface correction-factor for grav_var_h with [ua=> ua_int va => va_int]
+!
+              grav_dafcor= (ua_int*ua_int+va_int*va_int)/arad_zmet +ua_int*daf_fcos(i,j)   
+              grav_var_h(i,j,k) = grav_rad2/arad_zmet/arad_zmet - grav_dafcor	      
+              grav_var(i,j,k) = .5*(grav_var_h(i,j,k+1)+grav_var_h(i,j,k))
+              rdg(i,j,k) = -rdgas/grav_var(i,j,k)
+! (Re+Z)/Re	      
+	      daf_a(i,j,k) = (arad_zmet+newrad(i,j,k+1))*r_arad2 
+	      daf_du(i,j,k) = (arad_zmetU+ aradU)*r_arad2      ! D-grid U(i,  jc)
+	      daf_dv(i,j,k) = (arad_zmetV+ aradV)*r_arad2      ! D-grid V(ic, j)
+	      arad_zmetU = aradU
+	      arad_zmetV = aradV
+	      
+            enddo 
+! model-top	    
+	  k= 1
+	      ua_int = ua(i,j,k)
+	      va_int = va(i,j,k)
+	      arad_zmet = newrad(i,j,k+1) - delz(i,j,k)	 
+	      newrad(i,j,k) = arad_zmet  
+              grav_dafcor= (ua_int*ua_int+va_int*va_int)/arad_zmet +ua_int*daf_fcos(i,j)      
+              grav_var_h(i,j,k) = grav_rad2/arad_zmet/arad_zmet - grav_dafcor	      
+              grav_var(i,j,k) = .5*(grav_var_h(i,j,k+1)+grav_var_h(i,j,k))
+              rdg(i,j,k) = -rdgas/grav_var(i,j,k)
+	      
+	      daf_a(i,j,k) = (arad_zmet+newrad(i,j,k+1))*r_arad2  ! [(R+z)/R] at mid-points sum(delz) = Zint
+	      
+              delz_u =delz(i,j,k)
+	      delz_v =delz_u
+              if (i > 1 ) delz_v =.5*(delz_v +delz(i-1, j, k))
+	      if (j > 1 ) delz_u =.5*(delz_u +delz(i, j-1, k))
+	      aradU = arad_zmetU -delz_u
+	      aradV = arad_zmetV -delz_v
+	      daf_dU(i,j,k) = (arad_zmetU+ aradU)*r_arad2   
+	      daf_dV(i,j,k) = (arad_zmetV+ aradV)*r_arad2  	      	               	    
+          enddo
+        enddo  
+!==================================================================
+!	
+! trans_dafU(:, je+1,:), trans_dafV(ie+1,:,:) D-C grid transforms
+! due to :   delz(is:ie, js:je) are defined on A-grid 	
+! sw_core.F90  use winds  from is-1 to iep1+1 = ie+2; 
+!                         from js-1 to jep1+1 = je+2
+! Need consultations with GFDL-dycore team and Lucas
+! how to properlu fill in :  ie+1 and je+1 for daf_du, daf_dv
+!===================================================================
+	  do k=1, npz
+	     do i=is, ie
+	       daf_du(i,je+1,k) = daf_a(i,je,k)
+	     enddo
+	     do j=js,je
+	       daf_dv(ie+1,j,k) = daf_a(ie,j,k)  
+	     enddo	     	
+	  enddo
+	
+       endif	     	
 
-      ! Call CCPP timestep init
+       
+! Call CCPP timestep init
       call ccpp_physics_timestep_init(cdata, suite_name=trim(ccpp_suite), group_name="fast_physics", ierr=ierr)
       ! Reset all interstitial variables for CCPP version
       ! of fast physics, and manually set runtime parameters
@@ -385,15 +525,7 @@ contains
       allocate ( wam_kappain(isd:ied, jsd:jed, npz) ) 
       call init_ijk_mem(isd,ied, jsd,jed, npz, wam_kappain, kappa)    
       ind_trkap = get_tracer_index (MODEL_ATMOS, 'tr_kappa') 
-      
-!        if( is_master() )  write(6,*) ' tr_kappa index ', ind_trkap                        
-!      allocate ( kap_cor(isd:ied, jsd:jed, npz) ) 
-!      allocate ( mol_kt(isd:ied, jsd:jed, npz+1) )    
-!      allocate ( mol_vu(isd:ied, jsd:jed, npz+1) )               
-!      call init_ijk_mem(isd,ied, jsd,jed, npz, kap_cor, 0.)
-!      call init_ijk_mem(isd,ied, jsd,jed, npz+1, mol_vu, 2.e-5)
-!      call init_ijk_mem(isd,ied, jsd,jed, npz+1, mol_kt, 3.9e-5)
-	
+     	
 #endif
 
       !We call this BEFORE converting pt to virtual potential temperature,
@@ -457,8 +589,10 @@ contains
            hailwat = get_tracer_index (MODEL_ATMOS, 'hailwat')
            cld_amt = get_tracer_index (MODEL_ATMOS, 'cld_amt')
       endif
-
-      theta_d = get_tracer_index (MODEL_ATMOS, 'theta_d')
+!
+! novel diag for PT-tracer as theta_d
+!
+           theta_d = get_tracer_index (MODEL_ATMOS, 'theta_d')
 
 #ifdef SW_DYNAMICS
       akap  = 1.
@@ -690,6 +824,7 @@ contains
        enddo
   endif
 
+!+++++++++line 623 in FV3dyn/GFDL
 
                                                   call timing_on('FV_DYN_LOOP')
   do n_map=1, k_split   ! first level of time-split
@@ -710,7 +845,10 @@ contains
 #ifndef ROT3
       call start_group_halo_update(i_pack(8), u, v, domain, gridtype=DGRID_NE)
 #endif
-      if(flagstruct%var_grav) call start_group_halo_update(i_pack(2), grav_var_h, domain)
+      if(flagstruct%var_grav)   call start_group_halo_update(i_pack(2), grav_var_h, domain)
+      
+      if(flagstruct%ufswam_daf) call start_group_halo_update(i_pack(2), daf_A, domain)       
+      
                                            call timing_off('COMM_TOTAL')
 #ifdef __GFORTRAN__
 !$OMP parallel do default(none) shared(isd,ied,jsd,jed,npz,delp)
@@ -757,18 +895,94 @@ contains
      endif  
 #endif
 
+      if(flagstruct%ufswam_daf) then
+!$OMP parallel do default(none) shared(is,ie,js,je,npz, ua, va, uc, vc, u, v, daf_a, daf_dv, daf_du )     
+       do k=1,npz
+!A-grid       
+         do j=js,je
+            do i=is,ie
+              ua(i,j,k) = ua(i,j,k)*daf_a(i,j,k)
+	      va(i,j,k) = va(i,j,k)*daf_a(i,j,k)
+            enddo
+         enddo
+!C-grid	 
+         do j=js,je
+            do i=is,ie+1
+              uc(i,j,k) = uc(i,j,k)*daf_dv(i,j,k)
+            enddo
+         enddo	 
+         do j=js,je+1
+            do i=is,ie	 	      
+	      vc(i,j,k) = vc(i,j,k)*daf_du(i,j,k)
+            enddo
+         enddo	 
+!	 
+!D-grid	    we may need only the last u-v transform at D-grid
+!           in c_sw of sw-core.F90 (ua, va, uc, vc) are updated from (u,v)
+!
+         do j=js,je+1
+            do i=is,ie
+              u(i,j,k) = u(i,j,k)*daf_du(i,j,k)
+            enddo
+         enddo	
+         do j=js,je
+            do i=is,ie+1	 	      
+	      v(i,j,k) = v(i,j,k)*daf_dv(i,j,k)
+            enddo
+         enddo	 	 
+       enddo     	
+      endif
                                            call timing_on('DYN_CORE')
       call dyn_core(npx, npy, npz, ng, sphum, nq, mdt, n_map, n_split, zvir, cp_air, akap, cappa, &
                     kappa, liq_wat, ice_wat, rainwat, snowwat, graupel, hailwat, &
 #ifdef MULTI_GASES
                     kapad,  &
 #endif
-                    grav_var_h, hydrostatic, &
+                    grav_var_h, daf_a, daf_du, daf_dv,  hydrostatic, &
                     u, v, w, delz, pt, q, delp, pe, pk, phis, ws, omga, ptop, pfull, ua, va,           &
                     uc, vc, mfx, mfy, cx, cy, pkz, peln, q_con, ak, bk, ks, &
                     gridstruct, flagstruct, neststruct, idiag, bd, &
                     domain, n_map==1, i_pack, GFDL_interstitial%last_step, diss_est,time_total)
                                            call timing_off('DYN_CORE')
+					   
+      if(flagstruct%ufswam_daf) then
+      
+! updates of  daf_a, daf_du, daf_dv inside dyn_core    
+      
+!$OMP parallel do default(none) shared(is,ie,js,je,npz, ua, va, uc, vc, u, v, daf_a, daf_dv, daf_du )
+       do k=1,npz
+!A-grid       
+         do j=js,je
+            do i=is,ie
+              ua(i,j,k) = ua(i,j,k)/daf_a(i,j,k)
+	      va(i,j,k) = va(i,j,k)/daf_a(i,j,k)
+            enddo
+         enddo
+!C-grid	 
+         do j=js,je
+            do i=is,ie+1
+              uc(i,j,k) = uc(i,j,k)/daf_dv(i,j,k)
+            enddo
+         enddo	 
+         do j=js,je+1
+            do i=is,ie	 	      
+	      vc(i,j,k) = vc(i,j,k)/daf_du(i,j,k)
+            enddo
+         enddo	 
+!D-grid	 
+         do j=js,je+1
+            do i=is,ie
+              u(i,j,k) = u(i,j,k)/daf_du(i,j,k)
+            enddo
+         enddo	
+         do j=js,je
+            do i=is,ie+1	 	      
+	      v(i,j,k) = v(i,j,k)/daf_dv(i,j,k)
+            enddo
+         enddo	 	 
+       enddo     
+       
+      endif					   
      
 #ifdef SW_DYNAMICS
 !!$OMP parallel do default(none) shared(is,ie,js,je,ps,delp,grav_var)
@@ -795,6 +1009,14 @@ contains
                  flagstruct%hord_tr, q_split, mdt, idiag%id_divg, i_pack(10), i_pack(13), &
                  flagstruct%nord_tr, flagstruct%trdm2, flagstruct%lim_fac)
          else
+!=================================================================================================================
+!	 
+! double check that  [mfx, mfy, cx, cy] computed with the "horizontal" wind transform 
+!                    for the Deep Atmosphere Formulation
+!
+! Double check DAF-implementation for tracer_2d
+!
+!=================================================================================================================	 
             call tracer_2d(q, dp1, mfx, mfy, cx, cy, gridstruct, bd, domain, npx, npy, npz, nq,    &
                  flagstruct%hord_tr, q_split, mdt, idiag%id_divg, i_pack(10), i_pack(13), &
                  flagstruct%nord_tr, flagstruct%trdm2, flagstruct%lim_fac)
@@ -863,19 +1085,80 @@ contains
      
                                                   call timing_off('Remapping')
 
-      if(flagstruct%var_grav)then
+      if(.not.flagstruct%ufswam_daf.and.flagstruct%var_grav)then
+!$OMP parallel do default(none) shared(is,ie,js,je, npz, ps,delp,grav_var, grav_var_h, phis,arad_zmet, &
+!$OMP           newrad, rdg, grav_rad2, delz)      
         do j=js,je
           do i=is,ie
-            newrad(i,j,npz+1) = radius + (phis(i,j)/grav)
-            grav_var_h(i,j,npz+1) = grav*((radius**2)/(newrad(i,j,npz+1)**2))
+	    arad_zmet = radius + (phis(i,j)/grav)
+            newrad(i,j,npz+1) = arad_zmet
+            grav_var_h(i,j,npz+1) = grav_rad2/arad_zmet/arad_zmet
             do k=npz,1,-1
-              newrad(i,j,k) = newrad(i,j,k+1) - delz(i,j,k)
-              grav_var_h(i,j,k) = grav*((radius**2)/(newrad(i,j,k)**2))
+	     arad_zmet = newrad(i,j,k+1) - delz(i,j,k)
+              newrad(i,j,k) = arad_zmet
+              grav_var_h(i,j,k) = grav_rad2/arad_zmet/arad_zmet
               grav_var(i,j,k) = .5*(grav_var_h(i,j,k+1)+grav_var_h(i,j,k))
               rdg(i,j,k) = -rdgas/grav_var(i,j,k)
             enddo
           enddo
         enddo
+       else
+      if(flagstruct%ufswam_daf) then 
+!      
+! do we need  after "Lagrangian_to_Eulerian" recompute "ua-va"? (yes)
+!     
+         call c2l_ord2(u, v, ua, va, gridstruct, npz, gridstruct%grid_type, bd, gridstruct%bounded_domain) 
+!	 
+	 ua_int =0.0
+	 va_int =0.0
+	 dwdt_mid =0.0
+	 dwdt_int =0.0 
+!$OMP parallel do default(none) shared(is,ie,js,je, npz, ps,delp,grav_var, grav_var_h, phis,arad_zmet, &
+!$OMP           newrad, rdg, grav_rad2, delz, ua_int,va_int, ua, va, daf_fcos, grav_dafcor, flag_geff)     	 
+        do j=js,je
+          do i=is,ie	  
+	    arad_zmet = radius + phis(i,j)/grav
+            newrad(i,j,npz+1) = arad_zmet
+            grav_var_h(i,j,npz+1) = grav_rad2/arad_zmet/arad_zmet
+!	    
+! interface k=npz-1	    
+!   mid     km=npz-1     no "daf"-correction for k=npz+1 (ua, va =>  0)
+! interface ki=npz
+!   mid     km=npz
+! interface ki=npz+!		    
+            do k=npz,2,-1
+	      ua_int = .5*(ua(i,j,k)+ ua(i,j,k-1))
+	      va_int = .5*(va(i,j,k)+ va(i,j,k-1))
+	      arad_zmet = newrad(i,j,k+1) - delz(i,j,k)
+              newrad(i,j,k) = arad_zmet
+!	      
+! interface correction-factor for grav_var_h with [ua=> ua_int va => va_int]
+!
+             if(flag_geff) then
+              grav_dafcor= (ua_int*ua_int+va_int*va_int)/arad_zmet +ua_int*daf_fcos(i,j)  
+	     else
+	      grav_dafcor=0.
+	     endif   
+              grav_var_h(i,j,k) = grav_rad2/arad_zmet/arad_zmet - grav_dafcor	      
+              grav_var(i,j,k) = .5*(grav_var_h(i,j,k+1)+grav_var_h(i,j,k))
+              rdg(i,j,k) = -rdgas/grav_var(i,j,k)	      
+            enddo 
+	  k= 1
+	      ua_int = ua(i,j,k)
+	      va_int = va(i,j,k)
+	      arad_zmet = newrad(i,j,k+1) - delz(i,j,k)	 
+	      newrad(i,j,k) = arad_zmet  
+             if(flag_geff) then	      
+              grav_dafcor= (ua_int*ua_int+va_int*va_int)/arad_zmet +ua_int*daf_fcos(i,j)  
+	     else
+	      grav_dafcor=0.
+	     endif   	         
+              grav_var_h(i,j,k) = grav_rad2/arad_zmet/arad_zmet - grav_dafcor	      
+              grav_var(i,j,k) = .5*(grav_var_h(i,j,k+1)+grav_var_h(i,j,k))
+              rdg(i,j,k) = -rdgas/grav_var(i,j,k)	               	    
+          enddo
+        enddo  
+       endif	     	
       endif
 
      if(GFDL_interstitial%last_step)then 
@@ -970,7 +1253,7 @@ contains
 
 #ifdef MULTI_GASES
 !
-! fv3wam kap_cor of pt
+! ufswam kappa_correction of pt
 !					     					     
        if ( ind_trkap > 1 ) then
 !$OMP parallel do default(none) shared(is,ie,js,je, npz, ind_trkap, scal_kapcor,pe, peln, wam_kappain, q, pt, kappa, kapad)	
@@ -1049,17 +1332,56 @@ contains
            enddo
          enddo
        enddo
+
+      if(flagstruct%ufswam_geff) then	
+! daf-term corrections of u-v on D-grid Eulerian layers with time-step bdt
+      wom2 =bdt*2.*omega
+      dt2_rad = bdt/radius
+!      
+! use daf_dv daf_du to get D-newrad after the complete bdt-time_step
+!              
+      do k=1,npz
+        do j=js,je+1
+         do i=is,ie
+          wcu =.5*(w(i,j,k)+w(i,j+1,k))
+          u(i,j,k) = u(i,j,k) -  dt2_rad*u(i,j,k)*wcu/daf_du(i,j,k) - wom2*gridstruct%cosa_s(i,j)*wcu
+         enddo
+        enddo
+!	
+        do j=js,je
+          do i=is,ie+1
+           wcu =.5*(w(i,j,k)+w(i,j+1,k))
+           v(i,j,k) = v(i,j,k) - dt2_rad*v(i,j,k)*wcu/daf_dv(i,j,k)
+         enddo 
+	 enddo  
+       enddo   
+      endif
+      
 #ifdef MULTI_GASES
-! ------------------------------------------------------------
-! direct explicit molecular diffusion on the pressure levels
-! ------------------------------------------------------------
-      if ( flagstruct%molecular_diffusion .and. mdt>0) then
+! ----------------------------------------------------------------------------
+! 2026: explicit molecular and eddy diffusion, viscosity and heat conductivity 
+!       on the pressure levels after the kappa = Cp/R correction  
+! with time-step "bdt" after the last-step of VL dynamics mdt=bdt/real(k_split)
+! All variables after "call Lagrangian_to_Eulerian" vertical remap on
+! Eulerian pressure levels: pe = ak+bk*Ps
+! ----------------------------------------------------------------------------
+      if ( flagstruct%molecular_diffusion) &
         call molecular_diffusion_run(u, v, w, delp, pt, pkz, cappa, q, bd,   &
                  gridstruct, flagstruct, domain, npx, npy, npz, nq, bdt, n_map, akap, zvir, cv_air, ng, delz)
+		 
+      if (flagstruct%ufswam_med) then 
+    
+        call dycore_disedmol_step(ak, bk, ps, pe,  pk, pkz, cappa, u, v, w, delp, pt, q, bd,         &
+                 gridstruct, flagstruct, domain, npx, npy, npz, nq, bdt, n_map, &
+		 akap, zvir, cv_air, ng,  delz, grav_var_h, newrad, radius) 
       endif
-! -------------------------------------------------
-! computing wdens & wzhyd
-!-------------------------------------------------
+      
+      	      
+! ------------------------------------------------------
+! computing wdens & wzhyd in ufswam for ufswam_SWA need a FLAG
+
+!-------------------------------------------------------
+ if (flagstruct%ufswam_swa) then 
 #ifdef __GFORTRAN__
 !$OMP parallel do default(none) shared(is,ie,js,je,npz, num_gas, wzmhyd,wzkhyd, q, wdenshyd, wdens, wzhyd, phis, pt, pe, peln,delp, delz, grav_var)
 #else
@@ -1081,10 +1403,12 @@ contains
 	   enddo 	   
 	  enddo 
 	enddo      
-#endif       
+#endif 
+
+  endif  !ufswam_swa    
 ! -------------------------------------------------
 
-     endif ! last_step
+     endif ! last_step      if(GFDL_interstitial%last_step)then  .... the last step of VL-dynamics + EL_MED  
 
      if ( flagstruct%fv_debug ) then
        if (is_master()) write(*,'(A, I3, A1, I3)') 'finished k_split ', n_map, '/', k_split
@@ -1127,7 +1451,7 @@ contains
          endif
       end if
 #endif
-  enddo    ! n_map loop
+  enddo        ! n_map loop
                                                   call timing_off('FV_DYN_LOOP')
 						  
 

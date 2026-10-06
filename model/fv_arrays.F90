@@ -942,9 +942,13 @@ module fv_arrays_mod
   logical :: write_restart_with_bcs = .false.   !< Default setting for using DA-updated BC files
   logical :: regional_bcs_from_gsi = .false.    !< Default setting for writing restart files with boundary rows
   logical :: pass_full_omega_to_physics_in_non_hydrostatic_mode = .false.  !< Default to passing local omega to physics in non-hydrostatic 
-  logical :: var_grav = .false.  ! apply variable gravity (4D) to simulations
-
-
+  logical :: var_grav   = .false.  ! apply variable gravity (4D) to simulations
+  logical :: ufswam_daf = .false.  ! complte deep atmosphere formulation
+  logical :: ufswam_dafC = .false. ! deep atmosphere formulation tendencie after C_SW
+  logical :: ufswam_dafD = .false. ! deep atmosphere formulation tendencie after D_SW 
+  logical :: ufswam_geff = .false. ! deep atmosphere formulation for geff = g(r)-(u^2+v^2)/r - fcor_cos*Ua      
+  logical :: ufswam_med = .false.  ! large eddy simulations that repalce GW physics by eddy viscosity/conductivity
+  logical :: ufswam_swa = .false.  ! additional diagnostics for SWA outflows: density and satellite drag in fv_dynamics.f90 
   !>Convenience pointers
   integer, pointer :: grid_number
 

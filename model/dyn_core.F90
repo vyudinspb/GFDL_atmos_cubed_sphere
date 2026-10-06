@@ -144,7 +144,6 @@ module dyn_core_mod
   use fv_regional_mod,     only: dump_field, exch_uv, H_STAGGER, U_STAGGER, V_STAGGER
   use fv_regional_mod,     only: a_step, p_step, k_step, n_step
   use fv_mapz_mod,         only: moist_cv
-  use molecular_diffusion_mod, only: visc3d
 
 implicit none
 private
@@ -177,7 +176,7 @@ contains
 #ifdef MULTI_GASES
                      kapad,  &
 #endif
-                     grav_var_h, hydrostatic,  &
+                     grav_var_h,   daf_a, daf_du, daf_dv,  hydrostatic,  &
                      u,  v,  w, delz, pt, q, delp, pe, pk, phis, ws, omga, ptop, pfull, ua, va, &
                      uc, vc, mfx, mfy, cx, cy, pkz, peln, q_con, ak, bk, &
                      ks, gridstruct, flagstruct, neststruct, idiag, bd, domain, &
@@ -202,6 +201,11 @@ contains
     real, intent(inout), dimension(bd%isd:bd%ied+1,bd%jsd:bd%jed  ,npz):: v  !< D grid meridional wind (m/s)
     real, intent(inout) :: w(   bd%isd:,bd%jsd:,1:)  !< vertical vel. (m/s)
     real, intent(inout) ::  delz(bd%is:,bd%js:,1:)  !< delta-height (m, negative)
+    
+    real, intent(inout) ::  daf_a(bd%isd:bd%ied,bd%jsd:bd%jed,npz)           ! dimension of U-A/V-A
+    real, intent(inout) ::  daf_du(bd%isd:bd%ied,bd%jsd:bd%jed+1,npz)        ! dimension of U-D
+    real, intent(inout) ::  daf_dv(bd%isd:bd%ied+1,bd%jsd:bd%jed,npz)        ! dimension of V-D  
+    
     real, intent(inout) :: cappa(bd%isd:bd%ied,bd%jsd:bd%jed,1:npz)  !< moist kappa
     integer, intent(in) :: liq_wat, ice_wat, rainwat, snowwat, graupel, hailwat
     real, intent(in) :: kappa
@@ -297,7 +301,17 @@ contains
     integer :: nwat
     integer :: is,  ie,  js,  je
     integer :: isd, ied, jsd, jed
+    
     real :: grav_var(bd%isd:bd%ied,bd%jsd:bd%jed,npz)  !< variable gravity
+    real ::    r_radius2
+    logical :: ufswam_daf
+!
+! DAF-variables
+!    
+       r_radius2 = .5/radius
+       ufswam_daf = flagstruct%ufswam_daf
+       
+       
       is  = bd%is
       ie  = bd%ie
       js  = bd%js
@@ -487,7 +501,10 @@ contains
          call start_group_halo_update(i_pack(5), gz,  domain)
                              call timing_off('COMM_TOTAL')
       endif
-
+!===============
+! here we may put the [U, V, UA, VA, UC, VC] transforms for the Deep Atmosphere Formulations
+!                 to make a consistent adjustment for daf_a= (gz+radius)/radius; daf_du, daf_dv
+!===============
      endif
 
 
@@ -501,7 +518,9 @@ contains
      if ( it==1 ) then
                                        call timing_on('COMM_TOTAL')
           call complete_group_halo_update(i_pack(1), domain)
-          if(flagstruct%var_grav) call complete_group_halo_update(i_pack(2), domain)
+	  
+          if(flagstruct%var_grav.or.flagstruct%ufswam_daf) call complete_group_halo_update(i_pack(2), domain)
+	  
                                       call timing_off('COMM_TOTAL')
           do k=1,npz
             do j=jsd,jed
@@ -552,17 +571,21 @@ contains
                                                      call timing_off('COMM_TOTAL')
                                                      
                                                      call timing_on('c_sw')
-!$OMP parallel do default(none) shared(npz,isd,jsd,delpc,delp,ptc,pt,u,v,w,uc,vc,ua,va, &
+!$OMP parallel do default(none) shared(npz,isd,jsd, ied, jed, delpc,delp,ptc,pt,u,v,w,uc,vc,ua,va, &
 !$OMP                                  omga,ut,vt,divgd,flagstruct,dt2,hydrostatic,bd,  &
-!$OMP                                  gridstruct)
+!$OMP                                  gridstruct, daf_a, daf_du, daf_dv, ufswam_daf)
       do k=1,npz
+!             
+! 2026:  daf-addition in call c_sw
+!
          call c_sw(delpc(isd,jsd,k), delp(isd,jsd,k),  ptc(isd,jsd,k),    &
                       pt(isd,jsd,k),    u(isd,jsd,k),    v(isd,jsd,k),    &
                        w(isd:,jsd:,k),   uc(isd,jsd,k),   vc(isd,jsd,k),    &
                       ua(isd,jsd,k),   va(isd,jsd,k), omga(isd,jsd,k),    &
                       ut(isd,jsd,k),   vt(isd,jsd,k), divgd(isd,jsd,k),   &
                       flagstruct%nord,   dt2,  hydrostatic,  .true., bd,  &
-                      gridstruct, flagstruct)
+                      gridstruct, flagstruct,  &
+		      daf_a(isd,jsd, k), daf_du(isd,jsd, k), daf_dv(isd,jsd, k))
       enddo
                                                      call timing_off('c_sw')
       if ( flagstruct%nord > 0 ) then
@@ -649,12 +672,14 @@ contains
              npx, npy, gridstruct%sw_corner, gridstruct%se_corner, &
              gridstruct%ne_corner, gridstruct%nw_corner, bd, gridstruct%grid_type, flagstruct%dz_min)
                                             call timing_off('UPDATE_DZ_C')
-         if(.not.allocated(visc3d))then
-             allocate(visc3d(isd:ied,jsd:jed,npz))
-             visc3d = 0.0
-         endif
 
                                                call timing_on('Riem_Solver')
+!
+! vay-2026: "omga" input for Riem_Solver as W-wind after "c_sw" solver
+!
+!            "Riem_Solver_C" does not update "omga-W", only "gz(:,:,:)" and "PKC(:,:,:)"
+!
+					       
            call Riem_Solver_C( ms, dt2,   is,  ie,   js,   je,   npz,   ng,   &
                                akap, cappa, cp,  &
 #ifdef MULTI_GASES
@@ -663,7 +688,7 @@ contains
                                ptop, phis, omga, ptc,  &
                                q_con,  delpc, gz,  pkc, ws3, flagstruct%p_fac, &
                                flagstruct%a_imp, flagstruct%scale_z, pfull, &
-                               flagstruct%fast_tau_w_sec, flagstruct%rf_cutoff, grav_var, visc3d)
+                    flagstruct%fast_tau_w_sec, flagstruct%rf_cutoff, grav_var, ufswam_daf)
                                                call timing_off('Riem_Solver')
 
            if (gridstruct%nested) then
@@ -706,6 +731,7 @@ contains
       endif   ! end hydro check
 
       call p_grad_c(dt2, npz, delpc, pkc, gz, uc, vc, bd, gridstruct%rdxc, gridstruct%rdyc, hydrostatic)
+      
 
                                                                    call timing_on('COMM_TOTAL')
       call start_group_halo_update(i_pack(9), uc, vc, domain, gridtype=CGRID_NE)
@@ -801,7 +827,7 @@ contains
 !$OMP                                  is,ie,js,je,isd,ied,jsd,jed,omga,delp,gridstruct,npx,npy,  &
 !$OMP                                  ng,zh,vt,ptc,pt,u,v,w,uc,vc,ua,va,divgd,mfx,mfy,cx,cy,     &
 !$OMP                                  crx,cry,xfx,yfx,q_con,zvir,sphum,nq,q,dt,bd,rdt,iep1,jep1, &
-!$OMP                                  heat_source,diss_est,ptop,first_call)                                      &
+!$OMP                               heat_source,diss_est,ptop,first_call, daf_a,daf_dv,daf_du)    &
 !$OMP                          private(nord_k, nord_w, nord_t, damp_w, damp_t, d2_divg,   &
 !$OMP                          d_con_k,kgb, hord_m, hord_v, hord_t, hord_p, wk, heat_s,diss_e, z_rat)
     do k=1,npz
@@ -909,9 +935,13 @@ contains
             enddo
          enddo
        endif
+!
+! daf_ additions in call call d_sw( .....daf_a(isd,jsd,k), daf_du(isd,jsd,k), daf_dv(isd,jsd,k), &
+!        
        call d_sw(vt(isd,jsd,k), delp(isd,jsd,k), ptc(isd,jsd,k),  pt(isd,jsd,k),      &
-                  u(isd,jsd,k),    v(isd,jsd,k),   w(isd:,jsd:,k),  uc(isd,jsd,k),      &
+                  u(isd,jsd,k),    v(isd,jsd,k),   w(isd:,jsd:,k),  uc(isd,jsd,k),    &
                   vc(isd,jsd,k),   ua(isd,jsd,k),  va(isd,jsd,k), divgd(isd,jsd,k),   &
+		  daf_a(isd,jsd,k), daf_du(isd,jsd,k), daf_dv(isd,jsd,k),             &
                   mfx(is, js, k),  mfy(is, js, k),  cx(is, jsd,k),  cy(isd,js, k),    &
                   crx(is, jsd,k),  cry(isd,js, k), xfx(is, jsd,k), yfx(isd,js, k),    &
 #ifdef USE_COND
@@ -1083,7 +1113,7 @@ contains
                          pe, pkc, pk3, pk, peln, ws, &
                          flagstruct%scale_z, flagstruct%p_fac, flagstruct%a_imp, &
                          flagstruct%use_logp, remap_step, beta<-0.1, &
-                         flagstruct%fast_tau_w_sec, grav_var, visc3d)
+                         flagstruct%fast_tau_w_sec, grav_var, ufswam_daf)
                                                          call timing_off('Riem_Solver')
 
 
@@ -1194,7 +1224,9 @@ contains
        else
           call nh_p_grad(u, v, pkc, gz, delp, pk3, dt, ng, gridstruct, bd, npx, npy, npz, flagstruct%use_logp)
        endif
-
+!
+!
+!
 #ifdef ROT3
        if ( flagstruct%do_f3d ) then
 !$OMP parallel do default(none) shared(is,ie,js,je,npz,ua,gridstruct,w,va,isd,ied,jsd,jed)
@@ -1391,6 +1423,31 @@ contains
 
 !-----------------------------------------------------
   enddo   ! time split loop
+!  
+!  wind-transform only works in the VL-dycore where R= radius_Earth + Z = const
+!  it fails on the EUL pressure constant layes R= /= const with Z(lon, lat, t)  
+! 
+! deep atmosphere transform updates [daf_a, daf_du, daf_dv]  including "grav_varh"
+!      during [n-split! time split loop] variables are fixed (not updated by delz/delp)
+!      additional tests need to be performed for geomahnetic storms when Ztop > 1500 km
+! 
+  if(flagstruct%ufswam_daf) then
+  !$OMP parallel do default(none) shared(isd,ied,jsd,jed,npz,r_radius2, zh, daf_a, daf_du, daf_dv)
+           do k=1,npz
+              do j=jsd,jed
+                 do i=isd,ied
+! Save edge heights for update_dz_d
+                    daf_a(i,j,k)=(zh(i,j,k)+zh(i,j,k+1))*r_radius2 +1.
+		    
+! updates of daf_du, daf_dv requires D-grid defined zh-values: zh_du/zh-dv
+! GFDL-help	
+!                daf_du(i,j,k)=.5*(zh(i,j-1,k)+zh(i,j,k+1))*r_radius2 +1.
+!                daf_dv(i,j,k)=.5*(zh(i-1,j,k)+zh(i,j,k+1))*r_radius2 +1.
+	    
+                 enddo
+              enddo
+           enddo
+  endif 
   first_call=.false.
 !-----------------------------------------------------
     if ( nq > 0 .and. .not. flagstruct%inline_q ) then

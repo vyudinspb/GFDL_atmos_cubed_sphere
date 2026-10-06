@@ -43,15 +43,13 @@
 !     <td>fill_corners, XDir, YDir</td>
 !   </tr>
 ! </table>
-
- use molecular_diffusion_mod,  only: molecular_diffusion_coefs, &
-                                     tau_visc, tau_cond, tau_diff, visc3d
+!				     
  use tp_core_mod,       only: fv_tp_2d, pert_ppm, copy_corners,    &
                               deln_flux_explm, deln_flux_explm_udvd
  use fv_mp_mod, only: is_master, fill_corners, XDir, YDir
  use fv_arrays_mod, only: fv_grid_type, fv_grid_bounds_type, fv_flags_type
  use a2b_edge_mod, only: a2b_ord4
-
+ use constants_mod, only: radius, omega
 #ifdef SW_DYNAMICS
  use test_cases_mod,   only: test_case
 #endif
@@ -94,18 +92,20 @@
   real, parameter:: b4 =  0.45
   real, parameter:: b5 = -0.05
 
+! ufswam_dafC/D locals  
+  real :: dt2_rad,  dt4_rad,  wcu, wcv, wcuf, wom2        ! C-D w-averaed, dt/radius, 2*omega*dtfor DAF-terms
 
       private
       public :: c_sw, d_sw, fill_4corners, &
                 del6_vt_flux, divergence_corner, divergence_corner_nest, &
-		sles_tens_shear, edcoef_smag2
+		sles_tens_shear
 
   contains
 
 !>@brief The subroutine 'c_sw' performs a half-timestep advance of the C-grid winds.
    subroutine c_sw(delpc, delp, ptc, pt, u,v, w, uc,vc, ua,va, wc,  &
                    ut, vt, divg_d, nord, dt2, hydrostatic, dord4, &
-                   bd, gridstruct, flagstruct)
+                   bd, gridstruct, flagstruct, daf_a, daf_du, daf_dv)
 
       type(fv_grid_bounds_type), intent(IN) :: bd
       real, intent(INOUT), dimension(bd%isd:bd%ied,  bd%jsd:bd%jed+1) :: u, vc
@@ -115,18 +115,24 @@
       real, intent(OUT  ), dimension(bd%isd:bd%ied,  bd%jsd:bd%jed  ) :: delpc, ptc, wc
       real, intent(OUT  ), dimension(bd%isd:bd%ied+1,bd%jsd:bd%jed+1) :: divg_d
       integer, intent(IN) :: nord
-      real,    intent(IN) :: dt2
+      real,    intent(IN) :: dt2                      ! time-step fo C-grid advected variables dt2= dt/2
       logical, intent(IN) :: hydrostatic
       logical, intent(IN) :: dord4
       type(fv_grid_type),  intent(IN), target :: gridstruct
       type(fv_flags_type), intent(IN), target :: flagstruct
+      
+      real, intent(INOUT), dimension(bd%isd:bd%ied,  bd%jsd:bd%jed  )   ::  daf_a 
+      real, intent(INOUT), dimension(bd%isd:bd%ied,  bd%jsd:bd%jed+1  ) ::  daf_du          
+      real, intent(INOUT), dimension(bd%isd:bd%ied+1,  bd%jsd:bd%jed  ) ::  daf_dv        
 
 ! Local:
       logical:: sw_corner, se_corner, ne_corner, nw_corner
       real, dimension(bd%is-1:bd%ie+1,bd%js-1:bd%je+1):: vort, ke
+      real, dimension(bd%isd:bd%ied,  bd%jsd:bd%jed  ) :: ut_w, vt_w 
       real, dimension(bd%is-1:bd%ie+2,bd%js-1:bd%je+1):: fx, fx1, fx2
       real, dimension(bd%is-1:bd%ie+1,bd%js-1:bd%je+2):: fy, fy1, fy2
       real :: dt4
+      real :: dt2_daf, dtd_daf, daf_cgrid      
       integer :: i,j, is2, ie1
       integer iep1, jep1
 
@@ -140,7 +146,8 @@
       real, pointer, dimension(:,:)   :: sina_u, sina_v
 
       real, pointer, dimension(:,:) :: dx, dy, dxc, dyc
-
+      
+      
       is  = bd%is
       ie  = bd%ie
       js  = bd%js
@@ -171,10 +178,17 @@
       ne_corner = gridstruct%ne_corner
 
       iep1 = ie+1; jep1 = je+1
-
+!
+! DAF-scaled D-winds [(u, v) x (r/a)] => (ua, va) and (uc, vc), (ut, vt)
+!
       call d2a2c_vect(u, v, ua, va, uc, vc, ut, vt, dord4, gridstruct, bd, &
                       npx, npy, bounded_domain, flagstruct%grid_type)
-
+		      
+    if (flagstruct%ufswam_dafC) then		      
+      ut_w = ua
+      vt_w = va
+    endif  
+    
       if( nord > 0 ) then
          if (bounded_domain) then
             call divergence_corner_nest(u, v, ua, va, divg_d, gridstruct, flagstruct, bd)
@@ -182,7 +196,7 @@
             call divergence_corner(u, v, ua, va, divg_d, gridstruct, flagstruct, bd)
          endif
       endif
-
+    if (.not.flagstruct%ufswam_daf) then
       do j=js-1,jep1
          do i=is-1,iep1+1
             if (ut(i,j) > 0.) then
@@ -201,7 +215,37 @@
             end if
          enddo
       enddo
-
+     else 
+!
+!  flagstruct%ufswam_daf =.T. make adjustment of dt_layer = dt2/daf_a(i,j)/daf_a(i,j)    
+!   dA_da = dA_sa*(daf_a = r2/a2)             
+!  (ut, vt) dS_saf*dt = dS_daf/dt_daf
+!   dt2_daf =dt2/daf_a(i,j)/daf_a(i,j:  (r2/a2)*dX/dt = dX/dt_daf
+!
+!   defined values of daf_a [js-1:jep1, is-1:iep1+1] [js-1:je+2, is-1:iep1]
+! 
+      do j=js-1,jep1
+         do i=is-1,iep1+1
+	    dt2_daf =dt2/daf_a(i,j)/daf_a(i,j)   ! here the cell-aver correction of time-derivatives by r2/a2 factor
+            if (ut(i,j) > 0.) then
+                ut(i,j) = dt2_daf*ut(i,j)*dy(i,j)*sin_sg(i-1,j,3)
+            else
+                ut(i,j) = dt2_daf*ut(i,j)*dy(i,j)*sin_sg(i,j,1)
+            end if
+         enddo
+      enddo
+      do j=js-1,je+2
+         do i=is-1,iep1
+	    dt2_daf =dt2/daf_a(i,j)/daf_a(i,j)	 
+            if (vt(i,j) > 0.) then
+                vt(i,j) = dt2_daf*vt(i,j)*dx(i,j)*sin_sg(i,j-1,4)
+            else
+                vt(i,j) = dt2_daf*vt(i,j)*dx(i,j)*sin_sg(i,j,  2)
+            end if
+         enddo
+      enddo
+             
+    endif
 !----------------
 ! Transport delp:
 !----------------
@@ -386,12 +430,28 @@
       endif
 
       dt4 = 0.5*dt2
-      do j=js-1,jep1
+
+       do j=js-1,jep1
          do i=is-1,iep1
             ke(i,j) = dt4*(ua(i,j)*ke(i,j) + va(i,j)*vort(i,j))
          enddo
-      enddo
-
+       enddo
+          
+      if (flagstruct%ufswam_daf) then    
+       do j=js-1,jep1
+         do i=is-1,iep1
+! DAF:	 
+!      the linear daf-transform [U* = U*(a+z)/a] does not work for ke=Ua*u+v*Va
+! in covariant Vh-momentum equations
+! dt4 = constant due to dU*/dt = forcing_transformed including press-grad force (r/a)*1/r*dP/dx => 1/a*dP/x
+!       rescale back ua/daf_a and va/daf_a
+!       keeping scaled vc/uc parts of ke-(vc*va+uc*ua)	
+!       back to notmal ua/va-winds = (ua, va)daf_a  ke-C cell-centered
+            ke(i,j) = ke(i,j)/daf_a(i,j)
+         enddo
+       enddo
+      endif       
+      
 !------------------------------
 ! Compute circulation on C grid
 !------------------------------
@@ -407,12 +467,15 @@
             fy(i,j) = vc(i,j) * dyc(i,j)
          enddo
       enddo
-
+ 
       do j=js,je+1
          do i=is,ie+1
             vort(i,j) =  fx(i,j-1) - fx(i,j) - fy(i-1,j) + fy(i,j)
+	    
          enddo
       enddo
+      
+
 
 ! Remove the extra term at the corners:
       if ( sw_corner ) vort(1,    1) = vort(1,    1) + fy(0,   1)
@@ -421,14 +484,34 @@
       if ( nw_corner ) vort(1,  npy) = vort(1,  npy) + fy(0,  npy)
 
 !----------------------------
-! Compute absolute vorticity
+! Compute absolute vorticity ........gridstruct%rarea_c(i,j)
+!
+!  all gridstruct%rarea or %area are computed in SA-approx with Rearth
+!  DA corrections are in the wind transformed variables
+!  [vort/daf] = vort*Rearth/(Rearth+z)
+!  [dxc, dyc]/(area=dxc*dyc) ~ 1/Rearth
 !----------------------------
+      if (.not.flagstruct%ufswam_daf) then   
       do j=js,je+1
          do i=is,ie+1
             vort(i,j) = gridstruct%fC(i,j) + gridstruct%rarea_c(i,j) * vort(i,j)
          enddo
       enddo
-
+      
+      else  
+!       
+! similar backward scaling of cell-centered relative vorticity
+!         working with scaled uc and vc du_sc = dt*(fcor+vort)*vc_sc
+!
+!     vorticity is defined at the C-grid corners
+!
+       do j=js,je+1
+         do i=is,ie+1
+	   daf_cgrid = .25*(daf_a(i,j)+daf_a(i,j-1)+daf_a(i-1,j)+daf_a(i-1,j-1))          ! check with Lucas
+           vort(i,j) = gridstruct%fC(i,j) + gridstruct%rarea_c(i,j) * vort(i,j)/daf_cgrid ! restore back to "normal" [1/a : r/a = 1/r]	    
+         enddo
+      enddo    
+     endif 
 !----------------------------------
 ! Transport absolute vorticity:
 !----------------------------------
@@ -499,8 +582,11 @@
             endif
          enddo
       endif
-
+!
 ! Update time-centered winds on the C-Grid
+!        gradient terms of ke are "in the SA-form due to uc/vc by r/a=(1+z/a) transform
+!        standard coriolis terms (vort: fx,fy)*(wind: dt2*fx1,dt2*fy1)
+
       do j=js,je
          do i=is,iep1
             uc(i,j) = uc(i,j) + fy1(i,j)*fy(i,j) + gridstruct%rdxc(i,j)*(ke(i-1,j)-ke(i,j))
@@ -511,7 +597,57 @@
             vc(i,j) = vc(i,j) - fx1(i,j)*fx(i,j) + gridstruct%rdyc(i,j)*(ke(i,j-1)-ke(i,j))
          enddo
       enddo
+!      
+! vay-2026 Comment: "C_SW" only updates Uc-Vc and omga (not W) + delp & pt
+!                    Riem_Solver_C uses "wc" to get "gz"+'Pc", but don't correct Wc
+!                   "D_SW" operates with W from the previous sub-step of D_SW
+!                    using ut-vt at C-wind transport for gz in  update_dz_c  
 
+   if (flagstruct%ufswam_dafC) then
+!      
+! W is not updated by NH-C solver (Riem_solver_c) and W-adv-transport on C-GRID (omga) is not passed to SW_D 
+! the "uc-vc-w" momentum tendencies on C-grid due to DAF-terms unrelated to "area" r2/a2:
+! DAF-terms:
+!           (u2+v2)/r, uw/r, vw/r, +2omega*cos(phi) x[u, w]
+! ??? Do we need update.. W ... ??? and correct "uc, vc" by DAF terms to conserve Ekin-energy
+! 
+    dt2_rad = dt2/radius 
+    dt4_rad = .5*dt2_rad  
+     wom2 = 2.*omega*dt2 
+ 
+    do j=js-1,je+1
+      do i=is-1,ie+1  
+! (ut_w^2 +vt_w^2)/r on A-grid
+         dt2_daf =dt2_rad/daf_a(i,j)/daf_a(i,j)
+         wc(i,j) = wc(i,j) + dt2_daf*(ut_w(i,j)*ut_w(i,j)+vt_w(i,j)*vt_w(i,j)) &
+	                   + wom2*gridstruct%cosa_s(i,j)*ut_w(i,j)/daf_a(i,j) 
+      enddo
+    enddo 
+!========================================================================================
+! the VL-DAF "W-terms" in (u-v) momentum equations can be "formally" omitted, however, 
+!     w-daf update w/o changes of u-v-daf violates 
+!     the local kinetic energy conservation at the VL and EL layers
+!     we have three options
+!
+! option 1: apply non-divergent/gradient DAF-terms at the EL layers after the VL-EL remap
+!           as the "DAF-term" sub-step with "bdt" as a time-step
+! option 2: include (u2+v2)/(a+z) and fcos_w in the effective gravity "geff" that redefines delp,
+!           updating u-v by DAF-terms at EL after the VL-EL remap as "DAF-term" sub-step eith bdt
+! option 3: include DAF-terms in the 3D momentum update along the VL-surfaces, securing"Ekin=const" 
+!           with time-splitted VL sub-steps
+    do j=js-1,je+1
+      do i=is-1,ie+1 
+!      
+! uc_daf = uc x ( r/a =daf_dv)  the DAF-term correction for Vh-momentum
+!         	 
+	 vc(i,j) = vc(i,j) -dt4_rad*vc(i,j)*(wc(i,j)+wc(i,j+1))
+	 wcuf = .5*(wc(i+1,j)*daf_a(i+1,j)+wc(i,j)*daf_a(i,j))
+	 wcu  = .5*(wc(i+1,j)+wc(i,j))    
+	 uc(i,j) = uc(i,j) -dt2_rad*wcu*uc(i,j)-wom2*gridstruct%cosa_u(i,j)*wcuf
+      enddo
+    enddo    
+   endif       !flagstruct%ufswam_dafC 
+!     
    end subroutine c_sw
 
 
@@ -520,8 +656,8 @@
 
 !>@brief The subroutine 'd_sw' peforms a full-timestep advance of the D-grid winds
 !! and other prognostic varaiables.
-   subroutine d_sw(delpc, delp,  ptc,   pt, u,  v, w, uc,vc, &
-                   ua, va, divg_d, xflux, yflux, cx, cy,              &
+   subroutine d_sw(delpc, delp,  ptc,   pt, u,  v, w, uc, vc, &
+                   ua, va, divg_d, daf_a, daf_du, daf_dv, xflux, yflux, cx, cy,              &
                    crx_adv, cry_adv,  xfx_adv, yfx_adv, q_con, z_rat, kgb, heat_source,diss_est,  &
                    zvir, sphum, nq, q, k, km, inline_q,  &
                    dt, hord_tr, hord_mt, hord_vt, hord_tm, hord_dp, nord,   &
@@ -540,10 +676,12 @@
       type(fv_grid_bounds_type), intent(IN) :: bd
       real, intent(inout):: divg_d(bd%isd:bd%ied+1,bd%jsd:bd%jed+1) !< divergence
       real, intent(IN), dimension(bd%isd:bd%ied,  bd%jsd:bd%jed):: z_rat
-      real, intent(INOUT), dimension(bd%isd:bd%ied,  bd%jsd:bd%jed):: delp, pt, ua, va
+      
+      real, intent(INOUT), dimension(bd%isd:bd%ied,  bd%jsd:bd%jed):: delp, pt, ua, va, daf_a
+      
       real, intent(INOUT), dimension(bd%isd:      ,  bd%jsd:      ):: w, q_con
-      real, intent(INOUT), dimension(bd%isd:bd%ied  ,bd%jsd:bd%jed+1):: u, vc
-      real, intent(INOUT), dimension(bd%isd:bd%ied+1,bd%jsd:bd%jed  ):: v, uc
+      real, intent(INOUT), dimension(bd%isd:bd%ied  ,bd%jsd:bd%jed+1):: u, vc, daf_du
+      real, intent(INOUT), dimension(bd%isd:bd%ied+1,bd%jsd:bd%jed  ):: v, uc, daf_dv
       real, intent(INOUT):: q(bd%isd:bd%ied,bd%jsd:bd%jed,km,nq)
       real, intent(OUT),   dimension(bd%isd:bd%ied,  bd%jsd:bd%jed)  :: delpc, ptc
       real, intent(OUT),   dimension(bd%is:bd%ie,bd%js:bd%je):: heat_source
@@ -564,6 +702,9 @@
       logical:: sw_corner, se_corner, ne_corner, nw_corner
       real :: ut(bd%isd:bd%ied+1,bd%jsd:bd%jed)
       real :: vt(bd%isd:bd%ied,  bd%jsd:bd%jed+1)
+      
+      real :: ut_d(bd%isd:bd%ied+1,bd%jsd:bd%jed)
+      real :: vt_d(bd%isd:bd%ied,  bd%jsd:bd%jed+1)      
 !---
       real :: fx2(bd%isd:bd%ied+1,bd%jsd:bd%jed)
       real :: fy2(bd%isd:bd%ied,  bd%jsd:bd%jed+1)
@@ -581,7 +722,7 @@
       real :: gy(bd%is:bd%ie  ,bd%js:bd%je+1)  !< work Y-dir flux array
       logical :: fill_c
 
-      real :: dt2, dt4, dt5, dt6
+      real :: dt2, dt4, dt5, dt6, dt6_daf
       real :: damp, damp2, damp4, dd8, u2, v2, du2, dv2
       real :: u_lon
       integer :: i,j, is2, ie1, js2, je1, n, nt, n2, iq
@@ -881,6 +1022,14 @@
            enddo
         enddo
      endif      ! end grid_type choices
+!
+! we define ut-vt that advect scalars: mass (delp), w*delp, pt*delp
+!           cell-centered winds define the DAF correctios of w
+!
+! r2/a2*d(w)/dt = +r2/a2*(ut*ut_daf+vt*vt_daf)/(a+z) -r2/a2*ut_daf*2*omega*cosa_s
+! non-flux momentum-balance terms are handled as cell-averaged terms with
+! regular non-transformed "ut-vt" in contrast to transformed used in the divergent terms
+!
 
         do j=jsd,jed
            do i=is,ie+1
@@ -893,6 +1042,32 @@
               yfx_adv(i,j) = dt*vt(i,j)
            enddo
         enddo
+	
+!===================================
+!     dt_daf  = dt/daf_a/daf_a
+!     for cell-averaged mass, W, and PT
+!  [r2/a2]*d[rho*X]/dt = -div_vl(rho*X*V) +div_z(rho*X*W)
+!  integrating over the layer 
+!  r2dX/dt = d(r2X)/dt+2rX*dr/dt on VL dr/dt=0
+!   d[dr*r2/a2*rho*X]/dt =>d[(dp/g)*r2/a2*X]/dt
+!   dp/g*r2/a2 => dp/ga*(r4/a4) or dp/gvar*(r2/a2)
+! to keep "a" in gridstruct%area or rarea
+! area_sa = a2/r2*area_da or changing dt=>dt_daf
+! or correcting fluxes
+!===================================	
+     if (flagstruct%ufswam_daf) then 
+        do j=jsd,jed
+           do i=is,ie+1
+              xfx_adv(i,j) = xfx_adv(i,j)/(daf_a(i,j))**2
+           enddo
+        enddo
+
+        do j=js,je+1
+           do i=isd,ied
+              yfx_adv(i,j) =yfx_adv(i,j)/(daf_a(i,j))**2
+           enddo
+        enddo              
+      endif	
 
 ! Explanation of the following code:
 !    xfx_adv = dt*ut*dy
@@ -926,7 +1101,14 @@
 #ifdef SW_DYNAMICS
       endif
 #endif
-
+!
+! Double check below the area increments in VL-dynamics :  
+!        SA:  ra_x =  area(i,:) +xfx(i,:)- xfx(i+1,:)
+!        DA:  dt_daf = dt*a2/r2  dt_daf*ut*dy & dt_daf*vt*dx
+!
+! ra_x/ra_y = area(i,j) + delta[xfx_adv)/delta(xfx_adv)]
+! after wind-transform area = a2cos(lat)dlat*dlon
+!
       do j=jsd,jed
          do i=is,ie
             ra_x(i,j) = area(i,j) + xfx_adv(i,j) - xfx_adv(i+1,j)
@@ -937,8 +1119,9 @@
             ra_y(i,j) = area(i,j) + yfx_adv(i,j) - yfx_adv(i,j+1)
          enddo
       enddo
-
-
+!
+! advect "delp" or    -rhod*grav_var*(delz-dr)
+!
       call fv_tp_2d(delp, crx_adv, cry_adv, npx, npy, hord_dp, fx, fy,  &
                     xfx_adv,yfx_adv, gridstruct, bd, ra_x, ra_y, flagstruct%lim_fac, &
                     nord=nord_v, damp_c=damp_v)
@@ -986,6 +1169,9 @@
                    enddo
                 enddo
             endif
+!
+! advect "w" in VL
+!	    
             call fv_tp_2d(w, crx_adv,cry_adv, npx, npy, hord_vt, gx, gy, xfx_adv, yfx_adv, &
                           gridstruct, bd, ra_x, ra_y, flagstruct%lim_fac,                  &
                           mfx=fx, mfy=fy)
@@ -1014,6 +1200,10 @@
 !          enddo
 !       enddo
 !    endif
+
+!
+! advect "pt" in VL
+!
         call fv_tp_2d(pt, crx_adv,cry_adv, npx, npy, hord_tm, gx, gy,  &
                       xfx_adv,yfx_adv, gridstruct, bd, ra_x, ra_y, flagstruct%lim_fac, &
                       mfx=fx, mfy=fy, mass=delp, nord=nord_v, damp_c=damp_v)
@@ -1076,7 +1266,7 @@
 !----------------------
 ! Kinetic Energy Fluxes
 !----------------------
-! Compute B grid contra-variant components for KE:
+! Compute B-grid contra-variant components for KE:
 
       dt5 = 0.5 *dt
       dt4 = 0.25*dt
@@ -1136,13 +1326,20 @@
 
       call ytp_v(is,ie,js,je,isd,ied,jsd,jed, vb, u, v, ub, hord_mt, gridstruct%dy, gridstruct%rdy, &
                  npx, npy, flagstruct%grid_type, bounded_domain, flagstruct%lim_fac)
-
+		 
       do j=js,je+1
          do i=is,ie+1
             ke(i,j) = vb(i,j)*ub(i,j)
          enddo
       enddo
-
+    
+   if (flagstruct%ufswam_daf) then    
+      do j=js,je+1
+         do i=is,ie+1
+            ke(i,j) = ke(i,j)/daf_dv(i,j) ! nonlin product vb*ub <U_daf*U_daf> needs 1/daf_a "vb-cell point"
+         enddo
+      enddo    
+    endif 
       if (flagstruct%grid_type < 3) then
 
          if (bounded_domain) then
@@ -1186,51 +1383,79 @@
       else
          do j=js,je+1
             do i=is,ie+1
-               ub(i,j) = dt5*(uc(i,j-1)+uc(i,j))
+               ub(i,j) = dt5*(uc(i,j-1)+uc(i,j))                ! global domain ub-cell centered ?
             enddo
          enddo
+	 
       endif
 
       call xtp_u(is,ie,js,je, isd,ied,jsd,jed, ub, u, v, vb, hord_mt, gridstruct%dx, gridstruct%rdx, &
                  npx, npy, flagstruct%grid_type, bounded_domain, flagstruct%lim_fac)
-
+		 
+   if (.not.flagstruct%ufswam_daf) then        
       do j=js,je+1
          do i=is,ie+1
             ke(i,j) = 0.5*(ke(i,j) + ub(i,j)*vb(i,j))
          enddo
       enddo
-
+   else
+      do j=js,je+1
+         do i=is,ie+1
+            ke(i,j) =0.5*(ke(i,j) +ub(i,j)*vb(i,j)/daf_du(i,j))
+         enddo
+      enddo    
+    endif 
 !-----------------------------------------
 ! Fix KE at the 4 corners of the face:
 !-----------------------------------------
     if (.not. bounded_domain) then
-      dt6 = dt / 6.
+!      dt6 = dt / 6.
       if ( sw_corner ) then
+	if (.not.flagstruct%ufswam_daf) then
+	  dt6 = dt / 6.
+	else
+	   dt6 = dt5/(daf_du(1,1)+daf_dv(1,1)+daf_du(0,1))
+	endif   
            ke(1,1) = dt6*( (ut(1,1) + ut(1,0)) * u(1,1) +  &
                            (vt(1,1) + vt(0,1)) * v(1,1) +  &
                            (ut(1,1) + vt(1,1)) * u(0,1) )
       endif
       if ( se_corner ) then
            i = npx
+	if (.not.flagstruct%ufswam_daf) then
+	  dt6 = dt / 6.
+	else
+	   dt6 = dt5/(daf_dv(i,1)+daf_du(i,1)+daf_du(i-1,1))
+	endif	   
            ke(i,1) = dt6*( (ut(i,1) + ut(i,  0)) * u(i-1,1) + &
                            (vt(i,1) + vt(i-1,1)) * v(i,  1) + &
                            (ut(i,1) - vt(i-1,1)) * u(i,  1) )
       endif
       if ( ne_corner ) then
            i = npx;      j = npy
+	if (.not.flagstruct%ufswam_daf) then
+	  dt6 = dt / 6.
+	else
+	   dt6 = dt5/(daf_du(i,j)+daf_dv(i,j-1)+daf_du(i-1,j))
+	endif	 	   
            ke(i,j) = dt6*( (ut(i,j  ) + ut(i,j-1)) * u(i-1,j) +  &
                            (vt(i,j  ) + vt(i-1,j)) * v(i,j-1) +  &
                            (ut(i,j-1) + vt(i-1,j)) * u(i,j  )  )
       endif
       if ( nw_corner ) then
            j = npy
+	if (.not.flagstruct%ufswam_daf) then
+	  dt6 = dt / 6.
+	else
+	   dt6 = dt5/(daf_du(1,j)+daf_dv(1,j-1)+daf_du(0,j))
+	endif	 	   	   
            ke(1,j) = dt6*( (ut(1,  j) + ut(1,j-1)) * u(1,j  ) +  &
                            (vt(1,  j) + vt(0,  j)) * v(1,j-1) +  &
                            (ut(1,j-1) - vt(1,  j)) * u(0,j  )  )
       endif
     end if
 
-! Compute vorticity:
+! Compute vorticity:  ut-vt now for vorticity: u*dx-v*dy
        do j=jsd,jed+1
           do i=isd,ied
              vt(i,j) = u(i,j)*dx(i,j)
@@ -1241,14 +1466,23 @@
              ut(i,j) = v(i,j)*dy(i,j)
           enddo
        enddo
-
-! wk is "volume-mean" relative vorticity
+!
+! wk is "volume-mean" relative vorticity "central" see LR-1997
+!
        do j=jsd,jed
           do i=isd,ied
              wk(i,j) = rarea(i,j)*(vt(i,j)-vt(i,j+1)-ut(i,j)+ut(i+1,j))
           enddo
        enddo
-
+     if (flagstruct%ufswam_daf) then
+       do j=jsd,jed
+          do i=isd,ied  
+	    wk(i,j) =wk(i,j)/daf_a(i,j)  ! or not... relative vorticity integrated over the SA-area   
+          enddo
+       enddo 
+     endif
+     
+           
      if ( .not. hydrostatic ) then
         if( flagstruct%do_f3d ) then
 #ifdef ROT3
@@ -1267,7 +1501,8 @@
                   w(i,j) = w(i,j)/delp(i,j)
                enddo
             enddo
-        endif
+        endif         !  flagstruct%do_f3d
+	
         if ( damp_w>1.E-5 ) then
           do j=js,je
              do i=is,ie
@@ -1275,8 +1510,21 @@
              enddo
           enddo
         endif
-
-     endif
+       if (flagstruct%ufswam_dafD) then
+          dt2 = dt                 ! "w"  is not passed from c_sw, so integtated dt+dt in "do_f3d"
+	                           ! W-advection is made by "dt"     ???
+          dt2_rad = dt2/radius*0.25
+	  wom2    = omega*dt2
+          do j=js,je
+            do i=is,ie  
+	    wcu = u(i,j)+u(i,j+1)
+	    w(i,j) = w(i,j) + dt2_rad/daf_a(i,j)*    &
+                    (wcu*wcu + (v(i,j)+v(i+1,j))**2) &
+		   + wcu*wom2*gridstruct%cosa_s(i,j)     
+          enddo
+         enddo 
+       endif           ! ufswam_dafD
+     endif            !.not. hydrostatic 
 #ifdef USE_COND
      do j=js,je
         do i=is,ie
@@ -1351,7 +1599,9 @@
             end if
          enddo
       endif
-
+!
+!   delpc - horizontal div (U,V) D-grid
+!
       do j=js,je+1
          do i=is,ie+1
             delpc(i,j) = vort(i,j-1) - vort(i,j) + ptc(i-1,j) - ptc(i,j)
@@ -1367,14 +1617,19 @@
       do j=js,je+1
          do i=is,ie+1
             delpc(i,j) = gridstruct%rarea_c(i,j)*delpc(i,j)
+!	    
+! 2026:  UFSWAM_DAF
+! @V. Yudin for daf_dycore of UFSWAM we did not change strength of divergent damping
+!     assuming that  r/a*Ud = Ud_daf allow to use the area-metric of SA_dycore
+!	    
                 damp = gridstruct%da_min_c*max(d2_bg, min(0.20, dddmp*abs(delpc(i,j)*dt)))
-                vort(i,j) = damp*delpc(i,j)
+                vort(i,j) = damp*delpc(i,j)          !linear div-term with scaled winds
                 ke(i,j) = ke(i,j) + vort(i,j)
          enddo
       enddo
    else
 !--------------------------
-! Higher order divg damping
+! Higher order divergent damping
 !--------------------------
      do j=js,je+1
         do i=is,ie+1
@@ -1440,7 +1695,7 @@
                 vort(i,j) = abs(dt)*sqrt(delpc(i,j)**2 + vort(i,j)**2)
              enddo
           enddo
-      else  ! Correct form: works only for doubly preiodic domain
+      else  ! Correct form: works only for doubly periodic domain
           call smag_corner(abs(dt), u, v, ua, va, vort, bd, npx, npy, gridstruct, ng)
       endif
      endif
@@ -1497,7 +1752,9 @@
        enddo
     endif
    endif
-
+!
+! transport of abs-vorticity = relative-vort +coriol-f0
+!
     call fv_tp_2d(vort, crx_adv, cry_adv, npx, npy, hord_vt, fx, fy, &
                   xfx_adv,yfx_adv, gridstruct, bd, ra_x, ra_y, flagstruct%lim_fac)
     do j=js,je+1
@@ -1510,10 +1767,30 @@
           v(i,j) = ut(i,j) + ke(i,j) - ke(i,j+1) - fx(i,j)
        enddo
     enddo
-
+!   
+   if (flagstruct%ufswam_dafD) then
+!
+! daf_ term correctionds of (U,V) on D-grid
+!  
+    wom2 =dt*2.*omega
+    dt2_rad =dt/radius
+    do j=js,je+1
+       do i=is,ie
+          wcu =.5*(w(i,j)+w(i,j+1))
+          u(i,j) = u(i,j) -  dt2_rad*u(i,j)*wcu/daf_du(i,j) - wom2*gridstruct%cosa_s(i,j)*wcu
+       enddo
+    enddo
+    do j=js,je
+       do i=is,ie+1
+          wcv =.5*(w(i,j)+w(i,j+1))
+          v(i,j) = v(i,j) - dt2_rad*v(i,j)*wcv/daf_dv(i,j)
+       enddo
+    enddo   
+   endif                 !flagstruct%ufswam_dafD
+!   
 !--------------------------------------------------------
 ! damping applied to relative vorticity (wk):
-   if ( damp_v>1.E-5 ) then
+   if ( damp_v> 1.E-5 ) then
         damp4 = (damp_v*gridstruct%da_min_c)**(nord_v+1)
         call del6_vt_flux(nord_v, npx, npy, damp4, wk, vort, ut, vt, gridstruct, bd)
    endif
@@ -1533,9 +1810,14 @@
             gx(i,j) = fx(i,j)*vb(i,j)
          enddo
       enddo
-!----------------------------------
+!-------------------------------------------
 ! Heating due to damping:
-!----------------------------------
+!  Ke = Ke_W _+ Ke_UV
+! lost of KE due to divergence damping as a "heat"
+! approximated by linear friction - 
+! "damp" x (Ek_before -Ek_after) 
+! it can be negative for 2-nd/high order vicosity
+!--------------------------------------------
       damp = 0.25*d_con
       do j=js,je
          do i=is,ie
@@ -2855,7 +3137,7 @@ end subroutine ytp_v
      npt = -2
   endif
 
-! Initialize the non-existing corner regions
+! Initialize the non-existing corner regions: parms   a2 = -0.0625 a1 =  0.5625
   utmp(:,:) = big_number
   vtmp(:,:) = big_number
 
@@ -3349,16 +3631,15 @@ end subroutine ytp_v
   end select
 
  end subroutine fill_4corners
-!
+!=====================================================================
 ! SLES Horizontal Smag. Tensor witout UA VA call
 !
 !>@brief The subroutine 'sles_tens_shear' computes Smagorinsky damping.
 
  subroutine sles_tens_shear(u, v, smag_c, bd, npx, npy, gridstruct, ng)
  
-!> Compute the Tension_Shear strain at cell corners for Smagorinsky diffusion
-!!  work only if (grid_type==4) why ????
- 
+!> Compute the Tension_Shear strain at cell corners for Smagorinsky's eddy visc
+
  type(fv_grid_bounds_type), intent(IN) :: bd
  type(fv_grid_type), intent(IN), target :: gridstruct
  integer, intent(IN) :: npx, npy, ng
@@ -3418,7 +3699,7 @@ end subroutine ytp_v
              smag_c(i,j) = rarea_c(i,j)*(vt(i,j-1)-vt(i,j)-ut(i-1,j)+ut(i,j))
           enddo
        enddo
-! Fix the corners?? if grid_type /= 4
+!
 
 ! Compute shear strain:
        do j=jsd,jed+1
@@ -3446,52 +3727,4 @@ end subroutine ytp_v
 
  end subroutine sles_tens_shear
  
-!>@brief The subroutine 'edcoef_smag2' compute coefficients for eddy mixing to make stable HR-WAM simulations 
-!
-! NASA/CUA VAY-2024:  New Macro-Eddy Difusion, Viscosity and Heat: edcoef_smag2
-!
- subroutine edcoef_smag2(ng, npx, npy, bd, u,  v, w, edvis, vumol, gridstruct)
-       implicit none
- 
-       type(fv_grid_bounds_type), intent(IN) :: bd 
-       type(fv_grid_type), intent(IN), target :: gridstruct       
-    integer, intent(IN):: npx, npy, ng 
-    
-      real,  parameter :: edvismax  = 1.e8
-      real,  parameter ::    eff_kh = 0.1  
-      real,  parameter :: tensmin2  = 4.e-11
-      real,  parameter :: tensmin2z = 3.e-9  
-                     
-      real, intent(IN), dimension(bd%isd:      ,  bd%jsd:        ):: w
-      real, intent(IN), dimension(bd%isd:bd%ied  ,bd%jsd:bd%jed+1):: u
-      real, intent(IN), dimension(bd%isd:bd%ied+1,bd%jsd:bd%jed  ):: v
-      real, intent(in), dimension(bd%isd:bd%ied,bd%jsd:bd%jed)  ::  vumol    
-      real, intent(OUT), dimension(bd%isd:bd%ied,bd%jsd:bd%jed) ::  edvis
-!
-      real :: tens(bd%isd:bd%ied,bd%jsd:bd%jed)     !< Smag-tensor strain/shear on sphere   
-      real :: Lhdis2                                ! [2-dx length]^2 or Area of the mesh  
-      real :: ed_kh         
-      integer :: i, j
-      integer :: is,  ie,  js,  je         
-      
-      call sles_tens_shear(u, v, tens, bd, npx, npy, gridstruct, ng) 
-           
-      is  = bd%is
-      ie  = bd%ie
-      js  = bd%js
-      je  = bd%je
-!
-! vertical wind shear Sw =sqrt[(wx^2+wy^2)] can be added for the NH dycores
-! tensb is defined at         [do j=js,je+1 ; do i=is,ie+1 ]
-       do j=js,je+1
-          do i=is,ie+1
-	     Lhdis2=gridstruct%da_min_c * eff_kh        !*max(d2_bg, min(0.20, dddmp*vort(i,j)))  ! del-2
-	     ed_kh = tens(i,j)*Lhdis2                   ! tensor*Lh2
-             ed_kh = min(ed_kh, edvismax)               ! maxval for hor-eddy mixing
-	     edvis(i,j) = max(0.1*vumol(i,j), ed_kh)    ! if ed_kh < 0.1*vumol => add 10% of vumol to keep it stable
-                                                        ! if (ed_kh < 0.1*vumol(i,j) ed_kh =0. 	     
-          enddo
-       enddo      
- end subroutine edcoef_smag2
-! 
  end module sw_core_mod

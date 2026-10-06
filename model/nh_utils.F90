@@ -50,9 +50,9 @@ module nh_utils_mod
 ! </table>
 
 #ifdef OVERLOAD_R4
-   use constantsR4_mod,     only: rdgas, cp_air, grav
+   use constantsR4_mod,     only: rdgas, cp_air, grav, radius
 #else
-   use constants_mod,     only: rdgas, cp_air, grav
+   use constants_mod,     only: rdgas, cp_air, grav, radius
 #endif
    use constants_mod,     only: pi_8
    use tp_core_mod,       only: fv_tp_2d
@@ -353,10 +353,11 @@ CONTAINS
 #endif
                            ptop, hs, w3,  pt, q_con, &
                            delp, gz,  pef,  ws, p_fac, a_imp, scale_m, &
-                           pfull, fast_tau_w_sec, rf_cutoff, grav_var, visc3d)
+                           pfull, fast_tau_w_sec, rf_cutoff, grav_var, ufswam_daf)
 
    integer, intent(in):: is, ie, js, je, ng, km
    integer, intent(in):: ms
+   logical, intent(in):: ufswam_daf
    real, intent(in):: dt,  akap, cp, ptop, p_fac, a_imp, scale_m, fast_tau_w_sec, rf_cutoff
    real, intent(in):: ws(is-ng:ie+ng,js-ng:je+ng)
    real, intent(in), dimension(is-ng:ie+ng,js-ng:je+ng,km):: pt, delp
@@ -366,14 +367,16 @@ CONTAINS
 #endif
    real, intent(in)::   hs(is-ng:ie+ng,js-ng:je+ng)
    real, intent(in), dimension(is-ng:ie+ng,js-ng:je+ng,km):: w3
-   real, optional, intent(in), dimension(is-ng:ie+ng,js-ng:je+ng,km):: visc3d
+   
+!!!   real, optional, intent(in), dimension(is-ng:ie+ng,js-ng:je+ng,km):: visc3d
+
    real, intent(in), dimension(is-ng:ie+ng,js-ng:je+ng,km):: grav_var
    real, intent(in) :: pfull(km)
 ! OUTPUT PARAMETERS
    real, intent(inout), dimension(is-ng:ie+ng,js-ng:je+ng,km+1):: gz
    real, intent(  out), dimension(is-ng:ie+ng,js-ng:je+ng,km+1):: pef
 ! Local:
-  real, dimension(is-1:ie+1,km  ):: dm, dz2, w2, pm2, gm2, cp2, visc
+  real, dimension(is-1:ie+1,km  ):: dm, dz2, w2, pm2, gm2, cp2
   real, dimension(is-1:ie+1,km+1):: pem, pe2, peg
 #ifdef MULTI_GASES
   real, dimension(is-1:ie+1,km  ):: kapad2
@@ -385,8 +388,6 @@ CONTAINS
   integer is1, ie1
 
     gama = 1./(1.-akap)
-
-   visc(:,:) = 0.0
 
    is1 = is - 1
    ie1 = ie + 1
@@ -413,12 +414,12 @@ CONTAINS
    endif
 
 
-!$OMP parallel do default(none) shared(js,je,is1,ie1,km,delp,pef,ptop,gz,rgrav,grav_var,w3,pt,visc3d,visc, &
+!$OMP parallel do default(none) shared(js,je,is1,ie1,km,delp,pef,ptop,gz,rgrav,grav_var,w3,pt, &
 #ifdef MULTI_GASES
-!$OMP                                  a_imp,dt,gama,akap,ws,p_fac,scale_m,ms,hs,q_con,cappa,kapad,fast_tau_w_sec) &
+!$OMP                            ufswam_daf, a_imp,dt,gama,akap,ws,p_fac,scale_m,ms,hs,q_con,cappa,kapad,fast_tau_w_sec) &
 !$OMP                          private(cp2,gm2, dm, dz2, w2, pm2, pe2, pem, peg, kapad2)
 #else
-!$OMP                                  a_imp,dt,gama,akap,ws,p_fac,scale_m,ms,hs,q_con,cappa,fast_tau_w_sec) &
+!$OMP                            ufswam_daf, a_imp,dt,gama,akap,ws,p_fac,scale_m,ms,hs,q_con,cappa,fast_tau_w_sec) &
 !$OMP                          private(cp2,gm2, dm, dz2, w2, pm2, pe2, pem, peg)
 #endif
    do 2000 j=js-1, je+1
@@ -426,7 +427,6 @@ CONTAINS
       do k=1,km
          do i=is1, ie1
             dm(i,k) = delp(i,j,k)
-            if(present(visc3d)) visc(i,k) = visc3d(i,j,k)
          enddo
       enddo
 
@@ -486,12 +486,12 @@ CONTAINS
                        pe2, &
                        dm, pm2, w2, dz2, pt(is1:ie1,j,1:km), ws(is1,j), .true.)
       else
-           call SIM1_solver(dt, is1, ie1, km, rdgas, gama, gm2, cp2, akap, &
+           call SIM1_solver(dt, ufswam_daf, is1, ie1, km, rdgas, gama, gm2, cp2, akap, &
 #ifdef MULTI_GASES
                             kapad2, &
 #endif
                             pe2,  &
-                        dm, pm2, pem, w2, dz2, pt(is1:ie1,j,1:km), ws(is1,j), p_fac, fast_tau_w_sec, visc)
+                        dm, pm2, pem, w2, dz2, pt(is1:ie1,j,1:km), ws(is1,j), p_fac, fast_tau_w_sec)
       endif
 
       do k=2,km+1
@@ -526,7 +526,7 @@ CONTAINS
                           ptop, zs, q_con, w,  delz, pt,  &
                           delp, zh, pe, ppe, pk3, pk, peln, &
                           ws, scale_m,  p_fac, a_imp, &
-                          use_logp, last_call, fp_out, visc3d)
+                          use_logp, last_call, fp_out,ufswam_daf )
 !--------------------------------------------
 ! !OUTPUT PARAMETERS
 ! Ouput: gz: grav*height at edges
@@ -535,6 +535,7 @@ CONTAINS
 !--------------------------------------------
    integer, intent(in):: ms, is, ie, js, je, km, ng
    integer, intent(in):: isd, ied, jsd, jed
+   logical, intent(in):: ufswam_daf
    real, intent(in):: dt         ! the BIG horizontal Lagrangian time step
    real, intent(in):: akap, cp, ptop, p_fac, a_imp, scale_m
    real, intent(in):: zs(isd:ied,jsd:jed)
@@ -553,9 +554,9 @@ CONTAINS
    real, intent(out):: delz(is:ie,js:je,km)
    real, intent(out):: pk(is:ie,js:je,km+1)
    real, intent(out):: pk3(isd:ied,jsd:jed,km+1)
-   real, optional, intent(in):: visc3d(isd:ied,jsd:jed,km)
+!!!   real, optional, intent(in):: visc3d(isd:ied,jsd:jed,km)
 ! Local:
-  real, dimension(is:ie,km):: dm, dz2, pm2, w2, gm2, cp2, visc
+  real, dimension(is:ie,km):: dm, dz2, pm2, w2, gm2, cp2
   real, dimension(is:ie,km+1)::pem, pe2, peln2, peg, pelng
 #ifdef MULTI_GASES
   real, dimension(is:ie,km):: kapad2
@@ -568,15 +569,14 @@ CONTAINS
    peln1 = log(ptop)
      ptk = exp(akap*peln1)
 
-   visc(:,:) = 0.0
 
 !$OMP parallel do default(none) shared(is,ie,js,je,km,delp,ptop,peln1,pk3,ptk,akap,rgrav,zh,pt, &
-!$OMP                                  w,a_imp,dt,gama,ws,p_fac,scale_m,ms,delz,last_call,visc3d,visc, &
+!$OMP                                  w,a_imp,dt,gama,ws,p_fac,scale_m,ms,delz,last_call, &
 #ifdef MULTI_GASES
-!$OMP                                  peln,pk,fp_out,ppe,use_logp,zs,pe,cappa,q_con,kapad )          &
+!$OMP                          ufswam_daf, peln,pk,fp_out,ppe,use_logp,zs,pe,cappa,q_con,kapad )          &
 !$OMP                          private(cp2, gm2, dm, dz2, pm2, pem, peg, pelng, pe2, peln2, w2,kapad2)
 #else
-!$OMP                                  peln,pk,fp_out,ppe,use_logp,zs,pe,cappa,q_con )          &
+!$OMP                           ufswam_daf,  peln,pk,fp_out,ppe,use_logp,zs,pe,cappa,q_con )          &
 !$OMP                          private(cp2, gm2, dm, dz2, pm2, pem, peg, pelng, pe2, peln2, w2)
 #endif
    do 2000 j=js, je
@@ -590,7 +590,6 @@ CONTAINS
 #ifdef MULTI_GASES
             kapad2(i,k) = kapad(i,j,k)
 #endif
-            if(present(visc3d)) visc(i,k) = visc3d(i,j,k)
          enddo
       enddo
 
@@ -657,12 +656,12 @@ CONTAINS
                        pe2,   &
                        dm, pm2, w2, dz2, pt(is:ie,j,1:km), ws(is,j), .false.)
       elseif ( a_imp > 0.999 ) then
-           call SIM1_solver(dt, is, ie, km, rdgas, gama, gm2, cp2, akap, &
+           call SIM1_solver(dt, ufswam_daf, is, ie, km, rdgas, gama, gm2, cp2, akap, &
 #ifdef MULTI_GASES
                             kapad2, &
 #endif
                             pe2, dm,   &
-                            pm2, pem, w2, dz2, pt(is:ie,j,1:km), ws(is,j), p_fac, -1., visc)
+                            pm2, pem, w2, dz2, pt(is:ie,j,1:km), ws(is,j), p_fac, -1.)
       else
            call SIM_solver(dt, is, ie, km, rdgas, gama, gm2, cp2, akap, &
 #ifdef MULTI_GASES
@@ -1420,26 +1419,29 @@ CONTAINS
  end subroutine SIM3p0_solver
 
 
- subroutine SIM1_solver(dt,  is,  ie, km, rgas, gama, gm2, cp2, kappa, &
+ subroutine SIM1_solver(dt, ufswam_daf, is,  ie, km, rgas, gama, gm2, cp2, kappa, &
 #ifdef MULTI_GASES
                         kapad2, &
 #endif
                         pe, dm2,   &
-                        pm2, pem, w2, dz2, pt2, ws, p_fac, fast_tau_w_sec, visc_in)
+                        pm2, pem, w2, dz2, pt2, ws, p_fac, fast_tau_w_sec)
    integer, intent(in):: is, ie, km
+   logical, intent(in):: ufswam_daf
    real,    intent(in):: dt, rgas, gama, kappa, p_fac, fast_tau_w_sec
    real, intent(in), dimension(is:ie,km):: dm2, pt2, pm2, gm2, cp2
-   real, optional, intent(in) :: visc_in(is:ie,km)
+!!!   real, optional, intent(in) :: visc_in(is:ie,km)
    real, intent(in )::  ws(is:ie)
    real, intent(in ), dimension(is:ie,km+1):: pem
+   
    real, intent(out)::  pe(is:ie,km+1)
    real, intent(inout), dimension(is:ie,km):: dz2, w2
 #ifdef MULTI_GASES
    real, intent(inout), dimension(is:ie,km):: kapad2
 #endif
 ! Local
-   real, dimension(is:ie,km  ):: aa, bb, dd, w1, g_rat, gam, mdp, mdm, visc
+   real, dimension(is:ie,km  ):: aa, bb, dd, w1, g_rat, gam, mdp, mdm
    real, dimension(is:ie,km+1):: pp
+   real  :: visc(is:ie,km), zrad(is:ie, km)
    real, dimension(is:ie):: p1, bet
    real t1g, rdt, capa1
 #ifdef MULTI_GASES
@@ -1447,18 +1449,18 @@ CONTAINS
 #endif
    integer i, k   
    real  awmax, m4dz, imp_vumol, wrk1, wrk2, wrk3  
-   real :: znh, zero_visc
+   real :: znh, zero_visc, daf_wz, dz_mid
    
    awmax =285.                     ! 100 m/s
-   zero_visc =1.                   ! eliminate it in the future by splitting
+   zero_visc =0.                   ! eliminate it in the future by splitting
    znh =1.                         ! NH-portion of delz, if znh=1  for storm use "hydrostatic" expansion  
    m4dz = dt*(6.28*0.25/10.e3)**2  ! dw/dt = -Vu*mkz2W  Lz = 40 km
    
    
    mdp = 0.0
    mdm = 0.0
-   visc = 0.0
-   if(present(visc_in)) visc = visc_in
+   visc(is:ie,1:km) = 0.           ! vertical viscosity for W is applied after VL-step of dycore
+                                   ! both P' and W must be damped implicitly by heat conduction and visocity
 
 #ifdef MOIST_CAPPA
       t1g = 2.*dt*dt
@@ -1467,7 +1469,16 @@ CONTAINS
 #endif
       rdt = 1. / dt
     capa1 = kappa - 1.
-
+    
+     if (ufswam_daf) then   
+       do i=is, ie
+        zrad(i,km) = radius
+        do k=km-1, 1, -1
+	 zrad(i,k) =zrad(i,k+1) - dz2(i,k+1)
+        enddo
+       enddo
+     endif  
+     	
     do k=1,km
        do i=is, ie
 #ifdef MOIST_CAPPA
@@ -1517,17 +1528,24 @@ CONTAINS
 ! Start the w-solver
     do k=2, km
        do i=is, ie
+       dz_mid =dz2(i,k-1)+dz2(i,k)
 #ifdef MOIST_CAPPA
-          aa(i,k) = t1g*0.5*(gm2(i,k-1)+gm2(i,k))/(dz2(i,k-1)+dz2(i,k)) * (pem(i,k))
+          aa(i,k) = t1g*0.5*(gm2(i,k-1)+gm2(i,k))/dz_mid * pem(i,k)
 #else
 #ifdef MULTI_GASES
           gamax = 1./(1.-kapad2(i,k))
           t1gx = gamax * 2.*dt*dt
-          aa(i,k) = t1gx/(dz2(i,k-1)+dz2(i,k)) * (pem(i,k))
+          aa(i,k) = t1gx/dz_mid * pem(i,k)
 #else
-          aa(i,k) = t1g/(dz2(i,k-1)+dz2(i,k)) * (pem(i,k))
+          aa(i,k) = t1g/dz_mid * pem(i,k)
 #endif
 #endif
+
+          if (ufswam_daf) then 
+	     aa(i,k) = aa(i,k)*(1. - .5*dz_mid/zrad(i,k))**2
+          endif
+!...............[gamma*P/r2] x D(W *r2)/Dz 
+!     daf_factor: r2(k-1/2):r2(k) ~ .5*dz_mid/(rad+Z)
        enddo
     enddo
     do i=is, ie
@@ -1574,17 +1592,7 @@ CONTAINS
        enddo
     enddo
     
-   if(present(visc_in)) then
-   
-!     do k= 1, 70       ! start of the molec dissipation 70-th layer from the top
-!     do i=is, ie
-!        imp_vumol = 1./(visc(i,k)*m4dz+1.) 
-!        w2(i,k) = w2(i,k) *imp_vumol 
-!     enddo  	
-!     enddo 
-      
-   endif
-   
+  
 !!! Try Rayleigh damping of w
 !    if (fast_tau_w_sec > 1.e-5) then
 !       !currently not damping to heat

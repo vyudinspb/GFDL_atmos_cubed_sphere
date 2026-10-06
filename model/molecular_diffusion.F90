@@ -62,11 +62,17 @@ module molecular_diffusion_mod
 
       implicit none
 
-      integer :: ind_gas_str, ind_gas_end
+      integer :: ind_gas_str, ind_gas_end      
+      integer :: spo3, spo, spo2
       integer :: md_layers, md_tadj_layers
       real    ::  tau_visc, tau_cond, tau_diff
       real    :: md_consv_te
-      logical :: md_subcycle      
+      logical :: md_subcycle   
+!      
+! 2026 md_helium flag md_helium=.true.  high-top UFSWAM configuration
+!              
+      logical :: md_helium
+               
       real, parameter:: Runiv = 8314.4598 
       real, parameter:: amo=15.9994, amo2=31.9999, amo3=47.9982     !g/mol
       real, parameter::              amn2=28.013,  amh2o=18.0154    !g/mol
@@ -81,7 +87,9 @@ module molecular_diffusion_mod
       real, parameter:: avgd=6.0221415e23  ! Avogadro constant
       real, parameter:: bz=1.3806505e-23   ! Boltzmann constant J/K
       real, parameter:: a12=9.69e18 ! O-O2 diffusion params
-      real, parameter:: s12=0.774
+      real, parameter:: s12=0.774  
+          
+      real ::   am, fgas, a12bz, avgdbz
       real, allocatable :: visc3d(:,:,:)
 !
       public molecular_diffusion_init, read_namelist_molecular_diffusion_nml
@@ -99,7 +107,6 @@ module molecular_diffusion_mod
 !--------------------------------------------
       integer, intent(in):: ncnst, nwat
 !
-
       if( is_master() ) then
         write(*,*) ' molecular_diffusion is on'
         write(*,*) ' molecular_diffusion number of layers ',md_layers
@@ -110,7 +117,10 @@ module molecular_diffusion_mod
         write(*,*) ' conductivity day ',tau_cond,' with effect ',tau_cond
         write(*,*) ' diffusivity  day ',tau_diff,' with effect ',tau_diff
       endif
-
+!constants      
+      a12bz = a12 * bz
+      avgdbz= avgd * bz
+      
 #ifdef MULTI_GASES
       ind_gas_str = ind_gas
       ind_gas_end = num_gas
@@ -118,7 +128,12 @@ module molecular_diffusion_mod
       ind_gas_str = nwat + 1
       ind_gas_end = ncnst
 #endif
-
+      spo3  = ind_gas_str
+      spo   = spo3 + 1
+      spo2  = spo  + 1
+     	
+!	
+      fgas = 1                                  ! for dry thermosphere   
       return
       end subroutine molecular_diffusion_init
 
@@ -131,7 +146,7 @@ module molecular_diffusion_mod
 
       namelist /molecular_diffusion_nml/ tau_visc, tau_cond, tau_diff, &
                                          md_layers, md_tadj_layers, &
-                                         md_consv_te, md_subcycle
+                                         md_consv_te, md_subcycle, md_helium
 
       unit = stdlog()
 
@@ -156,58 +171,41 @@ module molecular_diffusion_mod
 ! Ouput: mur : viscosity for momemtum
 !        lam : conductivity for thermodynamics
 !        d12 : diffusivity for tracers
+!
+!
+!  Valery Yudin 2026: Optimized version for 
+!                     every time step of dycore
+!
 !--------------------------------------------
       integer, intent(in):: dim
+      
       real, intent(in):: plyr(dim), temp(dim), q(dim,*)
+      
       real, intent(out):: mur(dim), lam(dim), d12(dim)
 ! Local:
-      integer i, n, spo3, spo, spo2
+      integer i, n
       real   am, fgas, a12bz, avgdbz
       real   qo,  qo2,  qo3,  qn2,  qh2o
       real   o_n, o2_n, o3_n, n2_n, h2o_n
       real   mu, la, t69, rho, cpx, cvx, rho1
-
-!constants
-      a12bz = a12 * bz
-      avgdbz= avgd * bz
-      spo3  = ind_gas_str
-      spo   = spo3 + 1
-      spo2  = spo  + 1
-      if( spo.gt.ind_gas_end ) spo=0
-      if( spo2.gt.ind_gas_end ) spo2=0
-
       do n=1,dim
 !check
-        if(plyr(n).le.0.0) call mpp_error(FATAL,"ERROR non positive value of plyr")
-        if(temp(n).le.0.0) call mpp_error(FATAL,"ERROR non positive value of temp")
+!        if(plyr(n).le.0.0) call mpp_error(FATAL,"ERROR non positive value of plyr")
+!        if(temp(n).le.0.0) call mpp_error(FATAL,"ERROR non positive value of temp")
 
         d12(n) = a12bz*temp(n)**s12 * temp(n)/plyr(n)
-        if( d12(n).lt.0.0 .and. is_master() ) then
-          write(*,*) 'ERROR negative d12 a12bz temp plyr s12 ', &
-                      d12(n),a12bz,temp(n),plyr(n),s12
-        endif
+!        if( d12(n).lt.0.0 .and. is_master() ) then
+!          write(*,*) 'ERROR negative d12 a12bz temp plyr s12 ', &
+!                      d12(n),a12bz,temp(n),plyr(n),s12
+!        endif
 
-        fgas = 1.0
-        do i=2,ind_gas_str-1
-          fgas = fgas - max(0.0,q(n,i))
-        enddo
-        fgas = max(min(fgas,1.0),1.0E-20)         ! reasonable assured
-        fgas = 1./fgas
+!        qh2o = max(0.0,q(n,1))*fgas
 
-        qh2o = max(0.0,q(n,1))*fgas
-        qo   = 0.0
-        qo2  = 0.0
-        qo3  = 0.0
-        if(spo .ne.0) qo   = max(0.0,q(n,spo ))*fgas
-        if(spo2.ne.0) qo2  = max(0.0,q(n,spo2))*fgas
-        if(spo3.ne.0) qo3  = max(0.0,q(n,spo3))*fgas
+	
+        qo   = max(0.0,q(n,spo ))
+        qo2  = max(0.0,q(n,spo2))
+        qo3  = max(0.0,q(n,spo3))
 
-
-! reasonable values assure
-!        qo   = max(min(qo ,1.0),0.0)
-!        qo2  = max(min(qo2,1.0),0.0)
-!        qo3  = max(min(qo3,1.0),0.0)
-!        qh2o = max(min(qh2o,1.0),0.0)
 	
         qn2 = 1.0 - qo - qo2
         qn2  = max(min(qn2,1.0),0.0)	
@@ -217,9 +215,9 @@ module molecular_diffusion_mod
         cpx  = cpo*qo + cpo2*qo2 + cpn2*qn2 
 	 
         am = qo/amo + qo2/amo2 + qn2/amn2
-        am = 1.0 / am    ! g/mol [29-16]
+        am = 1.0 / am                                   ! g/mol [29-16]
 	
-	cvx  = cpx - runiv/am
+!	cvx  = cpx - runiv/am                           ! applied on p=const layers
 	
         o_n   = qo   * am / amo
         o2_n  = qo2  * am / amo2
@@ -233,7 +231,9 @@ module molecular_diffusion_mod
 !        rho = 1e-3 * am * plyr(n)/temp(n) / avgdbz    ! kg/m^3
         rho1 =avgdbz/plyr(n)/am
         mur(n) = mu * t69 * rho1
+	
 !vay-bug        lam(n) = la * t69 / rho / cvx
+
         lam(n) = la * t69 *rho1 / cpx
 
       enddo

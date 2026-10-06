@@ -59,7 +59,7 @@ module tp_core_mod
  public deln_flux_explm, deln_flux_explm_udvd
  public copy_corners_for_udvd 
  
-!fv3wam-v1: conservation of the viscous energy loss (2-nd order) verticaland horizontal 
+! UFSWAM-2026: conservation of the viscous energy loss (2-nd order) verticaland horizontal 
 
  public deln_flux_explm_wdis, deln_flux_explm_udvd_dis 
 
@@ -1717,8 +1717,8 @@ type(fv_grid_bounds_type), intent(IN) :: bd
  end subroutine copy_corners_for_udvd
 !===========================================
 !
-!FV3WAM-v1 of UFS-SWA: 
-!  2023 Valery Yudin CUA
+! UFSWAM-v1 of UFS-SWA: 
+!  2023-2026 Valery Yudin CUA
 ! accurate approximation for the u-v-w kinetic energy losses due to 2-nd or visocity
 !
 !===========================================
