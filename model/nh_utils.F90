@@ -383,7 +383,8 @@ CONTAINS
 #ifdef MULTI_GASES
   real, dimension(is-1:ie+1,km  ):: kapad2
 #endif
-!!!  real, dimension(is-ng:ie+ng,js-ng:je+ng,km):: rgrav
+
+
   real gama
   real(kind=8) :: rff_temp
   integer i, j, k
@@ -465,8 +466,8 @@ CONTAINS
             pm2(i,k) = dm(i,k)/log(pem(i,k+1)/pem(i,k))
 #endif
 #ifdef MULTI_GASES
-             kapad2(i,k) = kapad(i,j,k)
-	     rd2_msp(i,k) =rd_msp(i,j,k)
+            kapad2(i,k) = kapad(i,j,k)
+	    rd2_msp(i,k) =rd_msp(i,j,k)
 #endif
 !
 !             dm(i,k) = dm(i,k)*rgrav(i,j,k)

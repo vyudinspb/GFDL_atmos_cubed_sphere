@@ -110,16 +110,13 @@ CONTAINS
 #ifdef MULTI_GASES
   real, dimension(is:ie,km):: kapad2
 #endif
-  real, dimension(isd:ied,jsd:jed,km) :: rgrav
+
   real gama, ptk, peln1
   integer i, j, k
 
-    gama = 1./(1.-akap)
-
-   peln1 = log(ptop)
-     ptk = exp(akap*peln1)
-
-   
+  gama = 1./(1.-akap)
+  peln1 = log(ptop)
+  ptk = exp(akap*peln1)
 
 !$OMP parallel do default(none) shared(is,ie,js,je,km,delp,ptop,peln1,pk3,ptk,akap,grav_var,zh,pt, &
 !$OMP                                  w,a_imp,dt,gama,ws,p_fac,scale_m,ms,delz,last_call, &
