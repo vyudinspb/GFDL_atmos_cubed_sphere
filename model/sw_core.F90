@@ -227,6 +227,8 @@
       do j=js-1,jep1
          do i=is-1,iep1+1
 	    dt2_daf =dt2/daf_a(i,j)/daf_a(i,j)   ! here the cell-aver correction of time-derivatives by r2/a2 factor
+	                                         ! it will not work for dZ/dt =-Vh*dZ/dh. scaled Vars
+						 ! ut-vt are used in  update_dz_c([ut-vt]) & update_dz_d: [crx, xfx]
             if (ut(i,j) > 0.) then
                 ut(i,j) = dt2_daf*ut(i,j)*dy(i,j)*sin_sg(i-1,j,3)
             else

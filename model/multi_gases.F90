@@ -21,7 +21,9 @@
 
 !>@brief The module 'multi_gases' peforms multi constitutents computations.
 !>@author H.-M. H. Juang, NOAA/NWS/NCEP/EMC
-
+!>V. Yudin: Updates for UFSWAM-2026, internal specification of Cpi/Ri inside init-block
+!     no needs to use "namelist /multi_gases_nml/ ri,cpi" that contain "inaccurate" values
+!                                                 of R_n2_o_o2 and Cpi
 module multi_gases_mod
 
 ! Modules Included:
@@ -36,9 +38,10 @@ module multi_gases_mod
 !   </tr>
 ! </table>
 
-!* --------- Default gas values for wam ----------------------------------------
+!* --------- Namelist gas values for gsmwam ----------------------------------------
 !* R_n2+= 295.3892, R_h2o= 461.50, R_o3=173.2247, R_o= 519.674, R_o2=259.8370
 !* Cpn2+=1031.1083, Cph2o=1846.00, Cpo3=820.2391, Cpo=1299.185, Cpo2=918.0969
+!* --------- Namelist gas values for gsmwam ----------------------------------------
       use constants_mod,     only: rdgas, rvgas, cp_air
       use     fv_mp_mod,     only: is_master
       use mpp_mod,           only: stdlog, input_nml_file
@@ -101,39 +104,50 @@ module multi_gases_mod
 ! extra-tracer in FV3-dycore w/o description in field_table: "multi_gases_nml => 0:ncnst-1
 !  
       do n=0,ngas-1
-        if( ri(n).ne.0.0 .or. cpi(n).ne.0.0 ) num_gas=n
+        if( ri(n).ne.0.0 ) num_gas=n
       enddo
-      if ( num_gas.eq.1 ) default_gas=.true.
+
+!
+! num_gas:  is the last index of tracers with non-zero Ri(n) =/=0
+!     
+      if (num_gas == 0) then
+         if( is_master() )  print *, '+++ multi_gases_init:  num_gas = 0 ngas, nwat =', ngas, nwat
+	 return
+      endif
+      
+! num_gas >= 1 
+      
       allocate( vir (0:num_gas) )
       allocate( vicp(0:num_gas) )
       allocate( vicv(0:num_gas) )
-
+      
+      vir (0:num_gas) =0.
+      vicp(0:num_gas) =0.
+      vicv(0:num_gas) =0. 
+           
       cv_air = cp_air - rdgas
 !      
-! cvi is allocated/computed after read nml
+! cvi is allocated/computed after read nml, corrected by V. Yudin in 2023
 !    
 !      do n=0,num_gas
 !        cvi(n) = cpi(n) - ri(n)
 !      enddo
 !
-! major assumption for FV3WAM: q(N2)=q(0)=1. -sum(q[h2o]+q[oxi]) w/o condensate
+! major assumption for UFSWAM: q(N2)=q(0)=1. -sum(q[h2o]+q[oxi]) w/o condensate
 !       with condensate, different condensate corrections (1.-q_con) inside
 !       fv_mapz.F90,nh_core.F90,nh_utils.F90 fv_dynamics.F90
 !
       vir (0) =  ri(0)/rdgas
       vicp(0) = cpi(0)/cp_air
       vicv(0) = cvi(0)/cv_air
-      if( default_gas ) then
+      if( num_gas.eq.1 ) then
         vir (0) = 1.0
         vicp(0) = 1.0
         vicv(0) = 1.0
       endif
       do n=1,num_gas
-        vir(n) = 0.0
         if(  ri(n).gt.0.0 ) vir (n) =  ri(n)/rdgas -  vir (0)
-        vicp(n) = 0.0
         if( cpi(n).gt.0.0 ) vicp(n) = cpi(n)/cp_air - vicp(0)
-        vicv(n) = 0.0
         if( cvi(n).gt.0.0 ) vicv(n) = cvi(n)/cv_air - vicv(0)
       enddo
 
@@ -147,9 +161,11 @@ module multi_gases_mod
 
       return
       end subroutine multi_gases_init
+      
       subroutine read_namelist_multi_gases_nml(nml_filename,ncnst,nwat)
-
-
+       real, parameter :: runiv = 8314.4626
+       real, parameter :: an2 = 28.013, ao1 =15.999, ao2 = 31.998, ao3=47.997
+       real, parameter :: ah2o =18.015, ahe4 = 4.0026
 !     call read_namelist_multi_gases_nml(Atm(this_grid)%nml_filename, &
 !           Atm(this_grid)%flagstruct%ncnst,  Atm(this_grid)%flagstruct%nwat)     
 
@@ -167,15 +183,45 @@ module multi_gases_mod
        allocate (cvi(0:ncnst-1))
        ri     =    0.0
        cpi    =    0.0
-       cvi    =    0.0       
+       cvi    =    0.0   
+           
        ri(0)  = rdgas
-       cpi(0) = cp_air      
-        
+       cpi(0) = cp_air 
+!N2            
+       ri(0)  =  295.3892
+       cpi(0) = 1031.1083
+       ri(0)  = runiv/an2
+       cpi(0) = 7./2.*ri(0)     
+!H2O       
        ri(1)  = 461.50       
        cpi(1) = 1846.004
+       ri(1)  = runiv/ah2o
+       cpi(1) = 4.*ri(1)
+!
+! liguid water substances 2:nwat are excluded ri(2:nwat)=cpi(2:nwat)=0.
+!                         they are treated by moisture "sub-ne moist_cp/cv"  
+!   
+! O3    173.2247  820.2391     
+       ri(1+nwat)  = runiv/ao3      
+       cpi(1+nwat) = 4.*ri(1+nwat)
+              
+! O1    519.674   1299.185 
+       ri(2+nwat)  = runiv/ao1         
+       cpi(2+nwat) = 5./2.*ri(2+nwat)
        
+! O2    259.8370   918.0969  
+       ri(3+nwat)  =  runiv/ao2      
+       cpi(3+nwat) = 7./2.*ri(3+nwat)  
+      cvi(0:ncnst-1) = cpi(0:ncnst-1) -ri(0:ncnst-1)  
+               
+! Read multi_gases namelist
 
-       ! Read multi_gases namelist
+      call multi_gases_init(ncnst,nwat)
+      
+      return
+      
+! Valery Yudin 2026:  we exclude "multi_gases_nml" read
+      
        read (input_nml_file,multi_gases_nml,iostat=ios)
        ierr = check_nml_error(ios,'multi_gases_nml')
 

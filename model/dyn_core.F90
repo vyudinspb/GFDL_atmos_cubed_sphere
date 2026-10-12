@@ -174,7 +174,7 @@ contains
  subroutine dyn_core(npx, npy, npz, ng, sphum, nq, bdt, n_map, n_split, zvir, cp, akap, cappa,  &
                      kappa,liq_wat, ice_wat, rainwat, snowwat, graupel, hailwat, &
 #ifdef MULTI_GASES
-                     kapad,  &
+                     kapad, rd_msp, &
 #endif
                      grav_var_h,   daf_a, daf_du, daf_dv,  hydrostatic,  &
                      u,  v,  w, delz, pt, q, delp, pe, pk, phis, ws, omga, ptop, pfull, ua, va, &
@@ -210,7 +210,8 @@ contains
     integer, intent(in) :: liq_wat, ice_wat, rainwat, snowwat, graupel, hailwat
     real, intent(in) :: kappa
 #ifdef MULTI_GASES
-    real, intent(inout) :: kapad(bd%isd:bd%ied,bd%jsd:bd%jed,1:npz) !< multi_gases kappa
+    real, intent(inout) :: kapad(bd%isd:bd%ied,bd%jsd:bd%jed,1:npz)   !< multi_gases kappa
+    real, intent(inout) :: rd_msp(bd%isd:bd%ied,bd%jsd:bd%jed,1:npz)  ! ufswam variable "rdgas"  
 #endif
     real, intent(inout) :: pt(  bd%isd:bd%ied  ,bd%jsd:bd%jed  ,npz)  !< potential temperature (K)
     real, intent(inout) :: delp(bd%isd:bd%ied  ,bd%jsd:bd%jed  ,npz)  !< pressure thickness (pascal)
@@ -667,10 +668,26 @@ contains
            enddo
 
         endif
-                                            call timing_on('UPDATE_DZ_C')
+	
+
+  if(flagstruct%ufswam_daf) then
+!$OMP parallel do default(none) shared(isd,ied,jsd,jed,npz, ut, vt, daf_a, daf_du, daf_dv)
+           do k=1, npz
+              do j=jsd,jed
+                 do i=isd,ied
+		 
+! scaling dt by [a2/r2] in the flux-form equations and by [a/r] in the gradient-form
+		 
+                    ut(i,j,k) = ut(i,j,k)*daf_a(i,j,k)   ! new ut-vt for          [r/a]dZ/dt = -grad(Vh*Z)
+                    vt(i,j,k) = vt(i,j,k)*daf_a(i,j,k)	 ! in c_sw ut-vt used for [r2/a2]d(delp*X) = -div(Vh*delp*X)	    
+                 enddo
+              enddo
+           enddo	
+  endif
+                                             call timing_on('UPDATE_DZ_C')
          call update_dz_c(is, ie, js, je, npz, ng, dt2, dp_ref, zs, gridstruct%area, ut, vt, gz, ws3, &
-             npx, npy, gridstruct%sw_corner, gridstruct%se_corner, &
-             gridstruct%ne_corner, gridstruct%nw_corner, bd, gridstruct%grid_type, flagstruct%dz_min)
+             npx, npy, gridstruct%sw_corner, gridstruct%se_corner, gridstruct%ne_corner,  &
+             gridstruct%nw_corner, bd, gridstruct%grid_type, flagstruct%dz_min )
                                             call timing_off('UPDATE_DZ_C')
 
                                                call timing_on('Riem_Solver')
@@ -683,7 +700,7 @@ contains
            call Riem_Solver_C( ms, dt2,   is,  ie,   js,   je,   npz,   ng,   &
                                akap, cappa, cp,  &
 #ifdef MULTI_GASES
-                               kapad, &
+                               kapad, rd_msp, &
 #endif
                                ptop, phis, omga, ptc,  &
                                q_con,  delpc, gz,  pkc, ws3, flagstruct%p_fac, &
@@ -1084,6 +1101,27 @@ contains
                      gridstruct%bounded_domain, .true., npx, npy, flagstruct%a2b_ord, bd)
        else
 #ifndef SW_DYNAMICS
+
+  if(flagstruct%ufswam_daf) then
+!$OMP parallel do default(none) shared(isd,ied,jsd,jed,npz, crx, cry, xfx, yfx, daf_a, daf_du, daf_dv)
+           do k=1, npz
+              do j=jsd,jed
+                 do i=isd,ied
+		 
+! in update_dz_d: zh &	crx, cry, xfx, yfx	 
+!  isd = is - ng;  ied = ie + ng
+!  jsd = js - ng;  jed = je + ng
+		 
+! scaling "dt-cell" by [a2/r2] in the flux-form equations and by [a/r] in the gradient-form for "Z=zh"-cell-centered
+		 
+                    xfx(i,j,k) = xfx(i,j,k)*daf_a(i,j,k)   ! new xfx/crx for [r/a]dZ/dt = -grad(Vh*Z)
+                    crx(i,j,k) = crx(i,j,k)*daf_a(i,j,k)   ! in c_sw ut-vt used for [r2/a2]d(delp*X) = -div(Vh*delp*X)
+                    yfx(i,j,k) = yfx(i,j,k)*daf_a(i,j,k)   ! scaling by daf_a even ffor C-D grids 
+		    cry(i,j,k) = cry(i,j,k)*daf_a(i,j,k)		    	    
+                 enddo
+              enddo
+           enddo	
+  endif     
                                             call timing_on('UPDATE_DZ')
         call update_dz_d(nord_v, damp_vt, flagstruct%hord_tm, is, ie, js, je, npz, ng, npx, npy, gridstruct%area,  &
                          gridstruct%rarea, dp_ref, zs, zh, crx, cry, xfx, yfx, ws, rdt, gridstruct, bd, flagstruct%lim_fac, &
@@ -1107,7 +1145,7 @@ contains
                          isd, ied, jsd, jed, &
                          akap, cappa, cp,  &
 #ifdef MULTI_GASES
-                         kapad, &
+                         kapad, rd_msp, &
 #endif
                          ptop, zs, q_con, w, delz, pt, delp, zh,   &
                          pe, pkc, pk3, pk, peln, ws, &

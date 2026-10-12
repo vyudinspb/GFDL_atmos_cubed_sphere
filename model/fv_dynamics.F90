@@ -312,7 +312,7 @@ contains
       real, dimension(bd%isd:bd%ied,bd%jsd:bd%jed+1,npz) :: daf_dU      
       
 #ifdef MULTI_GASES
-      real, allocatable :: kapad(:,:,:)
+      real, allocatable :: kapad(:,:,:), rd_msp(:,:,:)
       real, allocatable :: wam_kappain(:,:,:)  
       integer           :: ind_trkap    
       real              :: pcell, pkzcell, scal_kapcor                         
@@ -346,7 +346,8 @@ contains
       real    :: r_arad2, arad_zmet, grav_dafcor, grav_rad2
       real    :: rgrav, arad_zmetU, arad_zmetV, delz_u, delz_v, aradU, aradV
       real    :: ua_int, va_int, dwdt_mid, dwdt_int , wcv, wcu, dt2_rad, wom2 
-       
+      real    :: rho_dzpt  
+          
       real, dimension(:,:,:), pointer :: cappa
       real, dimension(:,:,:), pointer :: dp1
       real, dimension(:,:,:), pointer :: dtdt_m
@@ -383,7 +384,8 @@ contains
       grav_var_h = grav
       grav_var  =  grav
       rdg_dpdz = -rdgas/grav
-      rdg(:,:,:) = -rdgas*rgrav     
+      rdg(:,:,:) = -rdgas*rgrav  
+
       flag_geff = flagstruct%ufswam_geff
       if(.not.flagstruct%ufswam_daf.and.flagstruct%var_grav)then
         do j=js,je
@@ -406,7 +408,7 @@ contains
       
       if(flagstruct%ufswam_daf) then
 !  
-! ua/va -defined  else  call c2l_ord2(u, v, ua, va, gridstruct, npz, gridstruct%grid_type, bd, gridstruct%bounded_domain)
+! ua/va -defined  call c2l_ord2(u, v, ua, va, gridstruct, npz, gridstruct%grid_type, bd, gridstruct%bounded_domain)
 ! 
 	 ua_int =0.0
 	 va_int =0.0
@@ -525,7 +527,8 @@ contains
       allocate ( wam_kappain(isd:ied, jsd:jed, npz) ) 
       call init_ijk_mem(isd,ied, jsd,jed, npz, wam_kappain, kappa)    
       ind_trkap = get_tracer_index (MODEL_ATMOS, 'tr_kappa') 
-     	
+      allocate ( rd_msp(isd:ied, jsd:jed, npz) ) 
+      call init_ijk_mem(isd,ied, jsd,jed, npz,rd_msp , rdgas)       	
 #endif
 
       !We call this BEFORE converting pt to virtual potential temperature,
@@ -635,12 +638,12 @@ contains
 #endif
 !$OMP                                  rainwat,ice_wat,snowwat,graupel,hailwat,pkz,flagstruct, &
 #ifdef MULTI_GASES
-!$OMP                                  kapad, nq, pe,    num_gas, ind_trkap,   &
+!$OMP                                  rd_msp, kapad, nq, pe,    num_gas, ind_trkap,   &
 #endif
 #ifdef __GFORTRAN__
-!$OMP                                  kappa,rdg,delp,pt,delz,nwat)                    &
+!$OMP                                  kappa,rdg,delp,pt,delz, rho_dzpt, nwat)           &
 #else
-!$OMP                                  cappa,kappa,rdg,delp,pt,delz,nwat)              &
+!$OMP                                  cappa,kappa,rdg,delp,pt,delz,rho_dzpt, nwat)             &
 #endif
 !$OMP                          private(cvm,i,j,k)
        do k=1,npz
@@ -652,27 +655,29 @@ contains
                            ice_wat, snowwat, graupel, hailwat, q, q_con(is:ie,j,k), cvm)
 #endif
              do i=is,ie
+	         rho_dzpt = rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)/delz(i,j,k)
 #ifdef MULTI_GASES
-                dp1(i,j,k) = virq(q(i,j,k,1:num_gas))-1.
+                dp1(i,j,k) = virq(q(i,j,k,1:num_gas))-1.   ! Rmulti/Rdgas-1
                 kapad(i,j,k)= kappa * (virqd(q(i,j,k,1:num_gas))/vicpqd(q(i,j,k,1:num_gas)))
+		rd_msp(i,j,k)= rdgas* virqd(q(i,j,k,1:num_gas))
 #else
                 dp1(i,j,k) = zvir*q(i,j,k,sphum)
 #endif
 
 #ifdef MOIST_CAPPA
-               cappa(i,j,k) = rdgas/(rdgas + cvm(i)/(1.+dp1(i,j,k)) )
-               pkz(i,j,k) = exp(cappa(i,j,k)*log(rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)*    &
+                cappa(i,j,k) = rdgas/(rdgas + cvm(i)/(1.+dp1(i,j,k)) )
+!               pkz(i,j,k) = exp(cappa(i,j,k)*log(rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)*    &
+                pkz(i,j,k) = exp(cappa(i,j,k)*log(rho_dzpt*    &
 #ifdef MULTI_GASES
-                            (1.+dp1(i,j,k))                  /delz(i,j,k)) )
+                            (1.+dp1(i,j,k)) ) )
 #else
-                            (1.+dp1(i,j,k))*(1.-q_con(i,j,k))/delz(i,j,k)) )
+                            (1.+dp1(i,j,k))*(1.-q_con(i,j,k)) )
 #endif
 
 #else
-               pkz(i,j,k) = exp( kappa*log(rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)*    &
-                            (1.+dp1(i,j,k))/delz(i,j,k)) )
+               pkz(i,j,k) = exp( kappa*log(rho_dzpt*(1.+dp1(i,j,k))) )
 !			    
-! >>>>  Rd_multi = Rdgas*(1.+dp1(i,j,k))=Rdgas*virq(q(i,j,k,:))
+!           >>>>  Rd_multi = Rdgas*(1.+dp1(i,j,k))=Rdgas*virq(q(i,j,k,:))
 !
 #endif	   
              enddo
@@ -686,7 +691,8 @@ contains
               do i=is,ie
                  dp1(i,j,k) = 0.
 #ifdef MULTI_GASES
-                 kapad(i,j,k)= kappa * (virqd(q(i,j,k,1:num_gas))/vicpqd(q(i,j,k,1:num_gas)))
+                 kapad(i,j,k)= kappa * virqd(q(i,j,k,1:num_gas))/vicpqd(q(i,j,k,1:num_gas))
+		 rd_msp(i,j,k)= rdgas* virqd(q(i,j,k,1:num_gas))
                  pkz(i,j,k) = exp(kapad(i,j,k)*log(rdg(i,j,k)*virqd(q(i,j,k,1:num_gas))*delp(i,j,k)*pt(i,j,k)/delz(i,j,k)))
 #else
                  pkz(i,j,k) = exp(kappa*log(rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)/delz(i,j,k)))
@@ -698,10 +704,7 @@ contains
              
     endif
 !    if( is_master() ) then 
-!    
-!      write(6,*) ' pt-tkel2', maxval(pt(is:ie, js:je, 1:npz)), minval(pt(is:ie, js:je, 1:npz))
-!      write(6,*) ' mol_vu', maxval(mol_vu(is:ie, js:je, 1:npz)), minval(mol_vu(is:ie, js:je, 1:npz))
-!      write(6,*) ' mol_kt', maxval(mol_kt(is:ie, js:je, 1:npz)), minval(mol_kt(is:ie, js:je, 1:npz))      
+!         write(6,*) ' pt-tkel2', maxval(pt(is:ie, js:je, 1:npz)), minval(pt(is:ie, js:je, 1:npz)) 
 !    endif
 
       if ( flagstruct%fv_debug ) then
@@ -839,6 +842,7 @@ contains
 
 #ifdef MULTI_GASES
       call start_group_halo_update(i_pack(13), kapad, domain)
+      call start_group_halo_update(i_pack(13), rd_msp, domain)
 #endif
       call start_group_halo_update(i_pack(1), delp, domain, complete=.false.)
       call start_group_halo_update(i_pack(1), pt,   domain, complete=.true.)
@@ -936,7 +940,7 @@ contains
       call dyn_core(npx, npy, npz, ng, sphum, nq, mdt, n_map, n_split, zvir, cp_air, akap, cappa, &
                     kappa, liq_wat, ice_wat, rainwat, snowwat, graupel, hailwat, &
 #ifdef MULTI_GASES
-                    kapad,  &
+                    kapad, rd_msp, &
 #endif
                     grav_var_h, daf_a, daf_du, daf_dv,  hydrostatic, &
                     u, v, w, delz, pt, q, delp, pe, pk, phis, ws, omga, ptop, pfull, ua, va,           &
@@ -1169,12 +1173,12 @@ contains
 #endif
 !$OMP                                  rainwat,ice_wat,snowwat,graupel,hailwat,pkz,flagstruct, &
 #ifdef MULTI_GASES
-!$OMP                                  kapad, nq, pe,    num_gas, ind_trkap,   &
+!$OMP                                  rd_msp, kapad, nq, pe,    num_gas, ind_trkap,   &
 #endif
 #ifdef __GFORTRAN__
-!$OMP                                  kappa,rdg,delp,pt,delz,nwat)                    &
+!$OMP                                  kappa,rdg,delp,pt,delz,rho_dzpt,nwat)                    &
 #else
-!$OMP                                  cappa,kappa,rdg,delp,pt,delz,nwat)              &
+!$OMP                                  cappa,kappa,rdg,delp,pt,delz,rho_dzpt, nwat)             &
 #endif
 !$OMP                          private(cvm,i,j,k)
        do k=1,npz
@@ -1185,27 +1189,26 @@ contains
                            ice_wat, snowwat, graupel, hailwat, q, q_con(is:ie,j,k), cvm)
 #endif
              do i=is,ie
+	         rho_dzpt = rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)/delz(i,j,k)
 #ifdef MULTI_GASES
-               dp1(i,j,k) = virq(q(i,j,k,1:num_gas))-1.
-               kapad(i,j,k)= kappa * (virqd(q(i,j,k,1:num_gas))/vicpqd(q(i,j,k,1:num_gas)))
+                dp1(i,j,k) = virq(q(i,j,k,1:num_gas))-1.   ! Rmulti/Rdgas-1
+                kapad(i,j,k)= kappa * (virqd(q(i,j,k,1:num_gas))/vicpqd(q(i,j,k,1:num_gas)))
+		rd_msp(i,j,k)= rdgas* virqd(q(i,j,k,1:num_gas))
 #else
                dp1(i,j,k) = zvir*q(i,j,k,sphum)
 #endif
 
 #ifdef MOIST_CAPPA
                cappa(i,j,k) = rdgas/(rdgas + cvm(i)/(1.+dp1(i,j,k)) )
-               pkz(i,j,k) = exp(cappa(i,j,k)*log(rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)*    &
+               pkz(i,j,k) = exp(cappa(i,j,k)*log( rho_dzpt *    &
 #ifdef MULTI_GASES
-                            (1.+dp1(i,j,k))                  /delz(i,j,k)) )
+                            (1.+dp1(i,j,k))) )              !  1/(1+dp1) =  rdgas/rdmulti, cappa=rdmulti/(cvMult+rdmulti)
 #else
                             (1.+dp1(i,j,k))*(1.-q_con(i,j,k))/delz(i,j,k)) )
 #endif
 
 #else
-               pkz(i,j,k) = exp( kappa*log(rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)*    &
-                            (1.+dp1(i,j,k))/delz(i,j,k)) )
-!			    
-! >>>>Valery:   Rd_multi = Rdgas*(1.+dp1(i,j,k))=Rdgas*virq(q(i,j,k,:))
+               pkz(i,j,k) = exp( kappa*log(rho_dzpt*(1.+dp1(i,j,k))/delz(i,j,k)) )			    
 !
 #endif	   
              enddo
@@ -1219,6 +1222,7 @@ contains
                dp1(i,j,k) = 0.
 #ifdef MULTI_GASES
                kapad(i,j,k)= kappa * (virqd(q(i,j,k,1:num_gas))/vicpqd(q(i,j,k,1:num_gas)))
+	       rd_msp(i,j,k)= rdgas* virqd(q(i,j,k,1:num_gas))
                pkz(i,j,k) = exp(kapad(i,j,k)*log(rdg(i,j,k)*virqd(q(i,j,k,1:num_gas))*delp(i,j,k)*pt(i,j,k)/delz(i,j,k)))
 #else
                pkz(i,j,k) = exp(kappa*log(rdg(i,j,k)*delp(i,j,k)*pt(i,j,k)/delz(i,j,k)))
@@ -1253,7 +1257,7 @@ contains
 
 #ifdef MULTI_GASES
 !
-! ufswam kappa_correction of pt
+! ufswam:   kappa_correction of pt using q(:,:,:,ind_trkap)
 !					     					     
        if ( ind_trkap > 1 ) then
 !$OMP parallel do default(none) shared(is,ie,js,je, npz, ind_trkap, scal_kapcor,pe, peln, wam_kappain, q, pt, kappa, kapad)	
@@ -1334,7 +1338,7 @@ contains
        enddo
 
       if(flagstruct%ufswam_geff) then	
-! daf-term corrections of u-v on D-grid Eulerian layers with time-step bdt
+! daf-term corrections of u-v on D-grid Eulerian layers with time-step "bdt"
       wom2 =bdt*2.*omega
       dt2_rad = bdt/radius
 !      
@@ -1642,11 +1646,9 @@ contains
 #ifdef MULTI_GASES
 
   deallocate(kapad)
-!  deallocate(kap_cor)
+  deallocate(rd_msp)
   deallocate(wam_kappain)  
-    
-!  deallocate(mol_kt)
-!  deallocate(mol_vu)   
+     
 #endif
 
   if ( flagstruct%fv_debug ) then

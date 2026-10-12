@@ -67,7 +67,7 @@ CONTAINS
   subroutine Riem_Solver3(ms, dt,   is,   ie,   js, je, km, ng,    &
                           isd, ied, jsd, jed, akap, cappa, cp,     &
 #ifdef MULTI_GASES
-                          kapad,  &
+                          kapad, rd_msp,  &
 #endif
                           ptop, zs, q_con, w,  delz, pt,  &
                           delp, zh, pe, ppe, pk3, pk, peln, &
@@ -90,6 +90,7 @@ CONTAINS
    real, intent(in), dimension(isd:,jsd:,1:):: q_con, cappa
 #ifdef MULTI_GASES
    real, intent(in), dimension(isd:ied,jsd:jed,km):: kapad
+   real, intent(in), dimension(isd:ied,jsd:jed,km):: rd_msp   
 #endif
    real, intent(in), dimension(isd:ied,jsd:jed,km):: grav_var
    real, intent(in), dimension(isd:ied,jsd:jed,km):: delp, pt
@@ -104,7 +105,7 @@ CONTAINS
 !   
 ! get-out option for viscous W-update  real, optional, intent(in) :: visc3d(isd:ied,jsd:jed,km)
 ! Local:
-  real, dimension(is:ie,km):: dm, dz2, pm2, w2, gm2, cp2
+  real, dimension(is:ie,km):: dm, dz2, pm2, w2, gm2, cp2, rd2_msp
   real, dimension(is:ie,km+1)::pem, pe2, peln2, peg, pelng
 #ifdef MULTI_GASES
   real, dimension(is:ie,km):: kapad2
@@ -130,8 +131,8 @@ CONTAINS
 !$OMP parallel do default(none) shared(is,ie,js,je,km,delp,ptop,peln1,pk3,ptk,akap,rgrav,zh,pt, &
 !$OMP                                  w,a_imp,dt,gama,ws,p_fac,scale_m,ms,delz,last_call, &
 #ifdef MULTI_GASES
-!$OMP                    ufswam_daf,peln,pk,fp_out,ppe,use_logp,zs,pe,cappa,q_con,kapad,fast_tau_w_sec ) &
-!$OMP                          private(cp2, gm2, dm, dz2, pm2, pem, peg, pelng, pe2, peln2, w2,kapad2)
+!$OMP                ufswam_daf,peln,pk,fp_out,ppe,use_logp,zs,pe,cappa,q_con,kapad,rd_msp, fast_tau_w_sec ) &
+!$OMP                       private(cp2, gm2, dm, dz2, pm2, pem, peg, pelng, pe2, peln2, w2,kapad2, rd2_msp)
 #else
 !$OMP                     ufswam_daf, peln,pk,fp_out,ppe,use_logp,zs,pe,cappa,q_con,fast_tau_w_sec )     &
 !$OMP                          private(cp2, gm2, dm, dz2, pm2, pem, peg, pelng, pe2, peln2, w2)
@@ -145,7 +146,8 @@ CONTAINS
             cp2(i,k) = cappa(i,j,k)
 #endif
 #ifdef MULTI_GASES
-            kapad2(i,k) = kapad(i,j,k)
+            kapad2(i,k) = kapad(i,j,k)	     
+	    rd2_msp(i,k) =rd_msp(i,j,k)
 #endif
          enddo
       enddo
@@ -217,7 +219,7 @@ CONTAINS
       elseif ( a_imp > 0.999 ) then
            call SIM1_solver(dt, ufswam_daf, is, ie, km, rdgas, gama, gm2, cp2, akap, &
 #ifdef MULTI_GASES
-                            kapad2,  &
+                            kapad2, rd2_msp, &
 #endif
                             pe2, dm,   &
                             pm2, pem, w2, dz2, pt(is:ie,j,1:km), ws(is,j), p_fac, fast_tau_w_sec)
