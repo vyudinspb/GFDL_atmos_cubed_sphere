@@ -139,7 +139,7 @@ CONTAINS
            cp2(i,k) = cappa(i,j,k)
 #endif
 #ifdef MULTI_GASES
-           kapad2(i,k) = kapad(i,j,k	     
+           kapad2(i,k) = kapad(i,j,k)
 	   rd2_msp(i,k)= rd_msp(i,j,k)
 #endif
          enddo
