@@ -115,13 +115,6 @@ CONTAINS
   integer i, j, k
 
     gama = 1./(1.-akap)
-!    do k=1,km
-!      do j=jsd,jed
-!        do i=isd,ied
-!          rgrav(i,j,k) = 1./grav_var(i,j,k)
-!        enddo
-!      enddo
-!    enddo
 
    peln1 = log(ptop)
      ptk = exp(akap*peln1)
@@ -141,13 +134,13 @@ CONTAINS
 
       do k=1,km
          do i=is, ie
-            dm(i,k) = delp(i,j,k)/grav_var(i,j,k)
+           dm(i,k) = delp(i,j,k)/grav_var(i,j,k)
 #ifdef MOIST_CAPPA
-            cp2(i,k) = cappa(i,j,k)
+           cp2(i,k) = cappa(i,j,k)
 #endif
 #ifdef MULTI_GASES
-            kapad2(i,k) = kapad(i,j,k)	     
-	    rd2_msp(i,k) =rd_msp(i,j,k)
+           kapad2(i,k) = kapad(i,j,k	     
+	   rd2_msp(i,k)= rd_msp(i,j,k)
 #endif
          enddo
       enddo
