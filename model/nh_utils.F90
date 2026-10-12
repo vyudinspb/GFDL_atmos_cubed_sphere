@@ -383,7 +383,7 @@ CONTAINS
 #ifdef MULTI_GASES
   real, dimension(is-1:ie+1,km  ):: kapad2
 #endif
-  real, dimension(is-ng:ie+ng,js-ng:je+ng,km):: rgrav
+!!!  real, dimension(is-ng:ie+ng,js-ng:je+ng,km):: rgrav
   real gama
   real(kind=8) :: rff_temp
   integer i, j, k
@@ -394,13 +394,13 @@ CONTAINS
    is1 = is - 1
    ie1 = ie + 1
 
-   do k=1,km
-     do j=js-1,je+1
-       do i=is1,ie1
-         rgrav(i,j,k) = 1./grav_var(i,j,k)
-       enddo
-     enddo
-   enddo
+!   do k=1,km
+!     do j=js-1,je+1
+!       do i=is1,ie1
+!         rgrav(i,j,k) = 1./grav_var(i,j,k)
+!       enddo
+!     enddo
+!   enddo
 
    !Set up rayleigh damping
    if (fast_tau_w_sec > 1.e-5 .and. .not. RFw_initialized) then
@@ -416,7 +416,7 @@ CONTAINS
    endif
 
 
-!$OMP parallel do default(none) shared(js,je,is1,ie1,km,delp,pef,ptop,gz,rgrav,grav_var,w3,pt, &
+!$OMP parallel do default(none) shared(js,je,is1,ie1,km,delp,pef,ptop,gz,grav_var,w3,pt, &
 #ifdef MULTI_GASES
 !$OMP               ufswam_daf, a_imp,dt,gama,akap,ws,p_fac,scale_m,ms,hs,q_con,cappa,kapad,rd_msp,fast_tau_w_sec) &
 !$OMP                          private(cp2,gm2, dm, dz2, w2, pm2, pe2, pem, peg, kapad2, rd2_msp)
@@ -428,7 +428,7 @@ CONTAINS
 
       do k=1,km
          do i=is1, ie1
-            dm(i,k) = delp(i,j,k)
+            dm(i,k) = delp(i,j,k)/grav_var(i,j,k)
          enddo
       enddo
 
@@ -468,7 +468,8 @@ CONTAINS
              kapad2(i,k) = kapad(i,j,k)
 	     rd2_msp(i,k) =rd_msp(i,j,k)
 #endif
-             dm(i,k) = dm(i,k)*rgrav(i,j,k)
+!
+!             dm(i,k) = dm(i,k)*rgrav(i,j,k)
              w2(i,k) = w3(i,j,k)
          enddo
       enddo

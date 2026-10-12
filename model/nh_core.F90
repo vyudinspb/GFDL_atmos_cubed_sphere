@@ -115,20 +115,20 @@ CONTAINS
   integer i, j, k
 
     gama = 1./(1.-akap)
-    do k=1,km
-      do j=jsd,jed
-        do i=isd,ied
-          rgrav(i,j,k) = 1./grav_var(i,j,k)
-        enddo
-      enddo
-    enddo
+!    do k=1,km
+!      do j=jsd,jed
+!        do i=isd,ied
+!          rgrav(i,j,k) = 1./grav_var(i,j,k)
+!        enddo
+!      enddo
+!    enddo
 
    peln1 = log(ptop)
      ptk = exp(akap*peln1)
 
    
 
-!$OMP parallel do default(none) shared(is,ie,js,je,km,delp,ptop,peln1,pk3,ptk,akap,rgrav,zh,pt, &
+!$OMP parallel do default(none) shared(is,ie,js,je,km,delp,ptop,peln1,pk3,ptk,akap,grav_var,zh,pt, &
 !$OMP                                  w,a_imp,dt,gama,ws,p_fac,scale_m,ms,delz,last_call, &
 #ifdef MULTI_GASES
 !$OMP                ufswam_daf,peln,pk,fp_out,ppe,use_logp,zs,pe,cappa,q_con,kapad,rd_msp, fast_tau_w_sec ) &
@@ -141,7 +141,7 @@ CONTAINS
 
       do k=1,km
          do i=is, ie
-            dm(i,k) = delp(i,j,k)
+            dm(i,k) = delp(i,j,k)/grav_var(i,j,k)
 #ifdef MOIST_CAPPA
             cp2(i,k) = cappa(i,j,k)
 #endif
@@ -188,7 +188,7 @@ CONTAINS
 #else
             pm2(i,k) = dm(i,k)/(peln2(i,k+1)-peln2(i,k))
 #endif
-             dm(i,k) = dm(i,k) * rgrav(i,j,k)
+!!!             dm(i,k) = dm(i,k) / grav_var(i,j,k)
             dz2(i,k) = zh(i,j,k+1) - zh(i,j,k)
              w2(i,k) = w(i,j,k)
          enddo

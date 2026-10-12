@@ -453,13 +453,13 @@ contains
               newrad(i,j,k) = arad_zmet
 !	      
 ! interface correction-factor for grav_var_h with [ua=> ua_int va => va_int]
-             if(flag_geff) then	
+            if(flag_geff) then	
 	      ua_int = .5*(ua(i,j,k)+ ua(i,j,k-1))
 	      va_int = .5*(va(i,j,k)+ va(i,j,k-1))	           
               grav_dafcor= (ua_int*ua_int+va_int*va_int)/arad_zmet +ua_int*daf_fcos(i,j)  
-	     else
+	    else
 	      grav_dafcor=0.
-	     endif   	     
+	    endif   	     
               grav_var_h(i,j,k) = grav_rad2/arad_zmet/arad_zmet - grav_dafcor	      
               grav_var(i,j,k) = .5*(grav_var_h(i,j,k+1)+grav_var_h(i,j,k))
               rdg(i,j,k) = -rdgas/grav_var(i,j,k)
@@ -472,10 +472,11 @@ contains
 	      
             enddo 
 ! model-top	    
-	  k= 1
+	      k= 1
 	      arad_zmet = newrad(i,j,k+1) - delz(i,j,k)	 
 	      newrad(i,j,k) = arad_zmet 
-	    if(flag_geff) then	 
+	      
+           if(flag_geff) then	 
 	      ua_int = ua(i,j,k)
 	      va_int = va(i,j,k)	      
               grav_dafcor= (ua_int*ua_int+va_int*va_int)/arad_zmet +ua_int*daf_fcos(i,j)
@@ -856,10 +857,11 @@ contains
 #ifndef ROT3
       call start_group_halo_update(i_pack(8), u, v, domain, gridtype=DGRID_NE)
 #endif
-      if(flagstruct%var_grav)   call start_group_halo_update(i_pack(2), grav_var_h, domain)
-      
-      if(flagstruct%ufswam_daf) call start_group_halo_update(i_pack(2), daf_A, domain)       
-      
+      if(flagstruct%var_grav)   call start_group_halo_update(i_pack(2), grav_var_h, domain)      
+      if(flagstruct%ufswam_daf) then 
+         call start_group_halo_update(i_pack(2), daf_A, domain)       
+         call start_group_halo_update(i_pack(6), daf_du, daf_dv, domain) 
+      endif         
                                            call timing_off('COMM_TOTAL')
 #ifdef __GFORTRAN__
 !$OMP parallel do default(none) shared(isd,ied,jsd,jed,npz,delp)
@@ -1143,21 +1145,22 @@ contains
 !	      
 ! interface correction-factor for grav_var_h with [ua=> ua_int va => va_int]
 !
-             if(flag_geff) then
+           if(flag_geff) then
 	      ua_int = .5*(ua(i,j,k)+ ua(i,j,k-1))
 	      va_int = .5*(va(i,j,k)+ va(i,j,k-1))	     
               grav_dafcor= (ua_int*ua_int+va_int*va_int)/arad_zmet +ua_int*daf_fcos(i,j)  
-	     else
+	    else
 	      grav_dafcor=0.
-	     endif   
+	    endif   
               grav_var_h(i,j,k) = grav_rad2/arad_zmet/arad_zmet - grav_dafcor	      
               grav_var(i,j,k) = .5*(grav_var_h(i,j,k+1)+grav_var_h(i,j,k))
               rdg(i,j,k) = -rdgas/grav_var(i,j,k)	      
             enddo 
-	  k= 1
+	   k= 1
 	      arad_zmet = newrad(i,j,k+1) - delz(i,j,k)	 
-	      newrad(i,j,k) = arad_zmet  
-             if(flag_geff) then	
+	      newrad(i,j,k) = arad_zmet 
+	       
+            if(flag_geff) then	
 	      ua_int = ua(i,j,k)
 	      va_int = va(i,j,k)	           
               grav_dafcor= (ua_int*ua_int+va_int*va_int)/arad_zmet +ua_int*daf_fcos(i,j)  

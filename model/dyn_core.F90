@@ -505,6 +505,7 @@ contains
 !===============
 ! here we may put the [U, V, UA, VA, UC, VC] transforms for the Deep Atmosphere Formulations
 !                 to make a consistent adjustment for daf_a= (gz+radius)/radius; daf_du, daf_dv
+! taking them from fv_dynamics.F90
 !===============
      endif
 
@@ -520,7 +521,7 @@ contains
                                        call timing_on('COMM_TOTAL')
           call complete_group_halo_update(i_pack(1), domain)
 	  
-          if(flagstruct%var_grav.or.flagstruct%ufswam_daf) call complete_group_halo_update(i_pack(2), domain)
+          if(flagstruct%var_grav.or.flagstruct%ufswam_daf) call complete_group_halo_update(i_pack(2), domain)  ! daf_a, grav_var_h
 	  
                                       call timing_off('COMM_TOTAL')
           do k=1,npz
@@ -567,6 +568,9 @@ contains
 
                                                      call timing_on('COMM_TOTAL')
      call complete_group_halo_update(i_pack(8), domain)
+     
+     if ( flagstruct%ufswam_daf ) call complete_group_halo_update(i_pack(6), domain)   ! daf_du/daf_dv
+     
      if( .not. hydrostatic )  &
           call complete_group_halo_update(i_pack(7), domain)
                                                      call timing_off('COMM_TOTAL')
@@ -676,10 +680,10 @@ contains
               do j=jsd,jed
                  do i=isd,ied
 		 
-! scaling dt by [a2/r2] in the flux-form equations and by [a/r] in the gradient-form
+! scaling dt by [a2/r2] in the flux-form equations and by [a/r] in the gradient-form   "update_dz_c"
 		 
-                    ut(i,j,k) = ut(i,j,k)*daf_a(i,j,k)   ! new ut-vt for          [r/a]dZ/dt = -grad(Vh*Z)
-                    vt(i,j,k) = vt(i,j,k)*daf_a(i,j,k)	 ! in c_sw ut-vt used for [r2/a2]d(delp*X) = -div(Vh*delp*X)	    
+                    ut(i,j,k) = ut(i,j,k)*daf_a(i,j,k)  !"new" ut-vt are fluxes of c-sw for dZ/dt = -[a/r]grad(Vh_daf*Z)
+                    vt(i,j,k) = vt(i,j,k)*daf_a(i,j,k)	! in "c_sw" ut/vt: d(X) = -[a2/r2]div(Vh_daf*X)=-div(Vht*X)	    
                  enddo
               enddo
            enddo	
@@ -1113,7 +1117,7 @@ contains
 !  jsd = js - ng;  jed = je + ng
 		 
 ! scaling "dt-cell" by [a2/r2] in the flux-form equations and by [a/r] in the gradient-form for "Z=zh"-cell-centered
-		 
+! before "update_dz_d"		 
                     xfx(i,j,k) = xfx(i,j,k)*daf_a(i,j,k)   ! new xfx/crx for [r/a]dZ/dt = -grad(Vh*Z)
                     crx(i,j,k) = crx(i,j,k)*daf_a(i,j,k)   ! in c_sw ut-vt used for [r2/a2]d(delp*X) = -div(Vh*delp*X)
                     yfx(i,j,k) = yfx(i,j,k)*daf_a(i,j,k)   ! scaling by daf_a even ffor C-D grids 
@@ -1214,7 +1218,7 @@ contains
         do k=1,npz+1
            do j=js-2,je+2
               do i=is-2,ie+2
-                 gz(i,j,k) = zh(i,j,k)*grav_var_h(i,j,k)
+                 gz(i,j,k) = zh(i,j,k)*grav_var_h(i,j,k)    ! we keep grav_var_h constant
               enddo
            enddo
         enddo
@@ -1470,6 +1474,9 @@ contains
 !      additional tests need to be performed for geomahnetic storms when Ztop > 1500 km
 ! 
   if(flagstruct%ufswam_daf) then
+  
+!!!zh-updated         call complete_group_halo_update(i_pack(4), domain)
+
   !$OMP parallel do default(none) shared(isd,ied,jsd,jed,npz,r_radius2, zh, daf_a, daf_du, daf_dv)
            do k=1,npz
               do j=jsd,jed
