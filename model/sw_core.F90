@@ -616,7 +616,7 @@
     dt2_rad = dt2/radius 
     dt4_rad = .5*dt2_rad  
      wom2 = 2.*omega*dt2 
- 
+  if (.not.flagstruct%ufswam_geff) then
     do j=js-1,je+1
       do i=is-1,ie+1  
 ! (ut_w^2 +vt_w^2)/r on A-grid
@@ -625,6 +625,7 @@
 	                   + wom2*gridstruct%cosa_s(i,j)*ut_w(i,j)/daf_a(i,j) 
       enddo
     enddo 
+   endif  
 !========================================================================================
 ! the VL-DAF "W-terms" in (u-v) momentum equations can be "formally" omitted, however, 
 !     w-daf update w/o changes of u-v-daf violates 
@@ -1517,14 +1518,16 @@
 	                           ! W-advection is made by "dt"     ???
           dt2_rad = dt2/radius*0.25
 	  wom2    = omega*dt2
+	if (.not.flagstruct%ufswam_geff) then  
           do j=js,je
             do i=is,ie  
 	    wcu = u(i,j)+u(i,j+1)
 	    w(i,j) = w(i,j) + dt2_rad/daf_a(i,j)*    &
                     (wcu*wcu + (v(i,j)+v(i+1,j))**2) &
 		   + wcu*wom2*gridstruct%cosa_s(i,j)     
-          enddo
-         enddo 
+            enddo
+           enddo 
+	 endif         ! geff
        endif           ! ufswam_dafD
      endif            !.not. hydrostatic 
 #ifdef USE_COND
