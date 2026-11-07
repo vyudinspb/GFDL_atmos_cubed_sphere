@@ -610,8 +610,7 @@ contains
      if (it > 1 .and. deep_atmd ) then
                                                      call timing_on('COMM_TOTAL')      
        call complete_group_halo_update(i_pack(14), domain )
-!       call complete_group_halo_update(i_pack(16), domain )  
-!       call complete_group_halo_update(i_pack(17), domain )             
+    
                                                      call timing_off('COMM_TOTAL') 
 !						     
 !	if(is_master())  write(*,*) ' check DAF_A ', maxval(daf_a), minval(daf_a)
@@ -630,15 +629,13 @@ contains
               do i=is,ie
 	        dafj = .5*(daf_a(i,j-1,k)+daf_a(i,j,k))
                 u(i,j,k) = u(i,j,k)*dafj
-!		vc(i,j,k) =vc(i,j,k)*dafj
               enddo
             enddo
 	    
             do j=js,je
               do i=is,ie+1
-	        dafi =  .5*(daf_a(i-1,j,k)+daf_a(i,j,k))
+	        dafi = .5*(daf_a(i-1,j,k)+daf_a(i,j,k))
                 v(i,j,k) = v(i,j,k)*dafi
-!		uc(i,j,k) =uc(i,j,k)*dafi
               enddo
             enddo   	    
           enddo 	  
@@ -746,24 +743,18 @@ contains
         endif
 	
   if(flagstruct%deep_atmd) then
-!     if( is_master() ) then
-!      print *, ' deep_atmd ', flagstruct%deep_atmd, npz !ng=3
-!      print *, ' daf_a ',  maxval(daf_a), minval(daf_a)
-!      print *, ' ut ',  maxval(ut(is-ng:ie+ng,js-ng:je+ng,1:npz) ), minval(ut(is-ng:ie+ng,js-ng:je+ng,1:npz) )
-!      print *, ' vt ',  maxval(vt(is-ng:ie+ng,js-ng:je+ng,1:npz) ), minval(vt(is-ng:ie+ng,js-ng:je+ng,1:npz) )      
-!     endif 
+
 !$OMP parallel do default(none) shared(is,ie,js,je, ng, npz, ut, vt, daf_a, i,j,k)
            do k=1, npz
               do j=js-ng,je+ng
                  do i=is-ng,ie+ng
                    ut(i,j,k) = ut(i,j,k)*daf_a(i,j,k) 
-		   vt(i,j,k) = vt(i,j,k)*daf_a(i,j,k)	
-		    		 
-! scaling dt by [a2/r2] in the flux-form equations and by [a/r] in the gradient-form for "update_dz_c"
+                   vt(i,j,k) = vt(i,j,k)*daf_a(i,j,k) 	
+!		    		 
+! scaling dt by [a2/r2] in the flux-form equations (FFE) and by [a/r] in the gradient-form for "update_dz_c"
 ! dr/dt = 0 or dZ/dt in DAF does not require (a2/r2) of the FFE only (a/r), Eq. below 
 !!"new" ut-vt are fluxes of c-sw for dZ/dt = -[a/r]grad(Vh_daf*Z)
-! in "c_sw" ut/vt: d(X) = -[a2/r2]div(Vh_daf*X)=-div(Vht*X)	
-    
+!   
                  enddo
               enddo
            enddo	
@@ -1214,7 +1205,7 @@ contains
               do j=js,je+1
                  do i=is-ng,ie+ng	      	    
                     yfx(i,j,k) = yfx(i,j,k)*daf_a(i,j,k)   
-		    cry(i,j,k) = cry(i,j,k)*daf_a(i,j,k)		    	    
+                    cry(i,j,k) = cry(i,j,k)*daf_a(i,j,k)		    	    
                  enddo
               enddo
            enddo	
