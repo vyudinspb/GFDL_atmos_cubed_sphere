@@ -1389,13 +1389,12 @@ contains
 !     "ifdef ROT3"=false
 !
   if (deep_atmd) then
-!$OMP parallel do default(none) shared(is,ie,js,je,npz,gz,zh,u,v, ua, va, uc, vc, dafj, dafi, dafc, r_rad2, r_rad4)
+!$OMP parallel do default(none) shared(is,ie,js,je,npz,gz,zh,u,v, ua, va, uc, vc, daf_a, dafj, dafi, dafc, r_rad2, r_rad4)
            do k=1,npz
             do j=js,je+1
               do i=is,ie
 	        dafj = 1.+r_rad4*(zh(i,j,k+1)+zh(i,j,k)+zh(i,j-1,k+1)+zh(i,j-1,k))
                 u(i,j,k) = u(i,j,k)/dafj
-!		vc(i,j,k) =vc(i,j,k)/dafj
               enddo
             enddo
 	    
@@ -1403,10 +1402,17 @@ contains
               do i=is,ie+1
 	        dafi = 1.+r_rad4*(zh(i,j,k+1)+zh(i,j,k)+zh(i-1,j,k+1)+zh(i-1,j,k))
                 v(i,j,k) = v(i,j,k)/dafi
-!		uc(i,j,k) =uc(i,j,k)/dafi
               enddo
-            enddo	    	    
-          enddo 	  
+            enddo
+	    
+            do j=js,je
+              do i=is,ie
+	         daf_a(i,j,k) =  1.+r_rad2*(zh(i,j,k+1)+zh(i,j,k))
+              enddo
+            enddo	
+	          	    	    	    
+          enddo 
+	      	  	  
   endif
 !--------------------------------------------------------------------------------	
 
