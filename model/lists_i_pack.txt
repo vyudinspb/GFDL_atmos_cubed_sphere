@@ -36,8 +36,8 @@ zh-pkc                                              allocate( zh(isd:ied, jsd:je
 #5     call start_group_halo_update(i_pack(5), gz,  domain)                    dy_core_only
  gz                                                  gz(bd%isd:bd%ied, bd%jsd:bd%jed, npz+1) 
 						       
-#6     call start_group_halo_update(i_pack(6), daf_a, domain)   fv_dyn
- daf_a
+#6     call start_group_halo_update(i_pack(6), rd_msp_a, domain)   fv_dyn
+
 #7     call start_group_halo_update(i_pack(7), w, domain)       MED-fv_dyn/dyn_core
  W
 #8     call start_group_halo_update(i_pack(8), u, v, domain, gridtype=DGRID_NE) fv/dyn_core after
@@ -54,15 +54,13 @@ zh-pkc                                              allocate( zh(isd:ied, jsd:je
        call start_group_halo_update(i_pack(13), dp1, domain)         fv_dyn  flagstruct%trdm2 > 1.e-4 
  kapad-delp1      
 #14
- call start_group_halo_update(i_pack(14), rd_msp, domain)  
- rd_msp
- 
+ call start_group_halo_update(i_pack(14), daf_a, domain)   
 #15
-  call start_group_halo_update(i_pack(15),daf_du, domain)
+  call start_group_halo_update(i_pack(15),rad_int, domain)
 daf_du 
-#16
-  call start_group_halo_update(i_pack(15),daf_du, domain)  
-
-daf_dv      
+#16 dyn_core.F90
+  call start_group_halo_update(i_pack(16),daf_du, domain)  
+#17 dyn_core.F90
+   call start_group_halo_update(i_pack(17), daf_dv,    domain)      
 
 
