@@ -160,7 +160,7 @@ module fv_control_mod
 #endif
    use molecular_diffusion_mod,     only: molecular_diffusion_init, &
                                           read_namelist_molecular_diffusion_nml
-
+   use dycore_dis_moleddy_mod,     only: edmol_diss_init, read_namelist_edmol_nml
    implicit none
    private
 
@@ -385,7 +385,6 @@ module fv_control_mod
      logical , pointer :: nudge_qv
      real,     pointer :: add_noise
      logical , pointer :: butterfly_effect
-     logical , pointer :: molecular_diffusion
      real,     pointer :: dz_min
      integer,  pointer :: psm_bc
 
@@ -404,7 +403,7 @@ module fv_control_mod
      logical, pointer :: regional
      integer, pointer :: bc_update_interval
      integer, pointer :: nrows_blend
-     logical, pointer :: var_grav
+
      logical, pointer :: regional_bcs_from_gsi
      logical, pointer :: write_restart_with_bcs
      integer, pointer :: parent_tile, refinement, nestbctype, nestupdate, upoff, nsponge, ioffset, joffset
@@ -418,6 +417,17 @@ module fv_control_mod
      logical, pointer :: write_coarse_agrid_vel_rst
      logical, pointer :: write_coarse_dgrid_vel_rst
      logical, pointer :: pass_full_omega_to_physics_in_non_hydrostatic_mode
+     
+! pointers for the Whole Atmosphere Extension of FV3 dycore in UFS, known as UFSWAM   
+     logical, pointer :: molecular_diffusion  ! Henry's old flag for fv3wam-2020
+     logical, pointer :: var_grav      ! variable gravity g(z) as the part of the deap atmosphere formulation
+     logical, pointer :: deep_atmd    ! the complete  deep atmosphere formulation of FV3-dycore for UFSWAM
+     logical, pointer :: deep_atmdC   ! correcting uc-vc-W by DAF terms after C_sw
+     logical, pointer :: deep_atmdD   ! correcting u-v-W by DAF terms after   D_sw  
+     logical, pointer :: ufswam_geff   !  geff-option       
+     logical, pointer :: ufswam_med    ! the LES/MED configuration of UFSWAM for resolutions C384, C768 & higher         
+     logical, pointer :: ufswam_swa    ! additional diagnostics for SWA outflows: density, comp and satellite drag
+     logical, pointer :: ufswam_msp    ! flag for the major species that form dry air density       
      !!!!!!!!!! END POINTERS !!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
      this_grid = -1 ! default
@@ -575,10 +585,15 @@ module fv_control_mod
      call read_namelist_multi_gases_nml(Atm(this_grid)%nml_filename, &
            Atm(this_grid)%flagstruct%ncnst,  Atm(this_grid)%flagstruct%nwat)
 #endif
-     if ( Atm(this_grid)%flagstruct%molecular_diffusion ) then
+     if ( Atm(this_grid)%flagstruct%molecular_diffusion) then
         call read_namelist_molecular_diffusion_nml(Atm(this_grid)%nml_filename, &
                   Atm(this_grid)%flagstruct%ncnst,  Atm(this_grid)%flagstruct%nwat)
      endif
+     if ( Atm(this_grid)%flagstruct%ufswam_med) then
+       call read_namelist_edmol_nml(Atm(this_grid)%nml_filename, &
+                  Atm(this_grid)%flagstruct%ncnst,  Atm(this_grid)%flagstruct%nwat)     
+     endif     
+     
      call read_namelist_test_case_nml(Atm(this_grid)%nml_filename)
      call mpp_get_current_pelist(Atm(this_grid)%pelist, commID=commID) ! for commID
      call mp_start(commID,halo_update_type)
@@ -869,7 +884,17 @@ module fv_control_mod
        regional                      => Atm%flagstruct%regional
        bc_update_interval            => Atm%flagstruct%bc_update_interval
        nrows_blend                   => Atm%flagstruct%nrows_blend
+!=====================================================================       
+!ufswam extension flags var_grav, ufswam_med, ufwam_daf   
+!=====================================================================              
        var_grav                      => Atm%flagstruct%var_grav
+       deep_atmd                    => Atm%flagstruct%deep_atmd
+       deep_atmdC                   => Atm%flagstruct%deep_atmdC
+       deep_atmdD                   => Atm%flagstruct%deep_atmdD
+       ufswam_geff                   => Atm%flagstruct%ufswam_geff                     
+       ufswam_med                    => Atm%flagstruct%ufswam_med
+       ufswam_msp                    => Atm%flagstruct%ufswam_msp
+       ufswam_swa                    => Atm%flagstruct%ufswam_swa
        regional_bcs_from_gsi         => Atm%flagstruct%regional_bcs_from_gsi
        write_restart_with_bcs        => Atm%flagstruct%write_restart_with_bcs
        reset_eta                     => Atm%flagstruct%reset_eta
@@ -1093,7 +1118,8 @@ module fv_control_mod
             nestbctype, nestupdate, upoff, nsponge, s_weight, &
             check_negative, nudge_ic, halo_update_type, gfs_phil, agrid_vel_rst,     &
             do_uni_zfull, adj_mass_vmr, fac_n_spl, fhouri, update_blend, regional, bc_update_interval,  &
-            regional_bcs_from_gsi, write_restart_with_bcs, nrows_blend, var_grav, &
+            regional_bcs_from_gsi, write_restart_with_bcs, nrows_blend, var_grav, deep_atmd, ufswam_med, &
+	    ufswam_swa, deep_atmdC, deep_atmdD, ufswam_geff, &
             write_coarse_restart_files,&
             write_coarse_diagnostics,&
             write_only_coarse_intermediate_restarts, &

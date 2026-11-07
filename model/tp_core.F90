@@ -59,7 +59,7 @@ module tp_core_mod
  public deln_flux_explm, deln_flux_explm_udvd
  public copy_corners_for_udvd 
  
-!fv3wam-v1: conservation of the viscous energy loss (2-nd order) verticaland horizontal 
+! UFSWAM-2026: conservation of the viscous energy loss (2-nd order) verticaland horizontal 
 
  public deln_flux_explm_wdis, deln_flux_explm_udvd_dis 
 
@@ -1395,10 +1395,10 @@ endif
  subroutine deln_flux_explm(nord,is,ie,js,je,npx,npy,damp,q,gridstruct,bd)
 !> Del-2 time split explicit damping for the cell-mean values (A grid)
 !------------------
-!> nord =  used for extra grid as side
+!> nord = 0 .....used for extra grid as side
 !------------------
    type(fv_grid_bounds_type), intent(IN) :: bd
-   integer, intent(in):: nord            !< del-n
+   integer, intent(in):: nord                     !< del-n =0
    integer, intent(in):: is,ie,js,je, npx, npy
    real, intent(in):: damp(bd%isd:bd%ied, bd%jsd:bd%jed)
    real, intent(inout):: q(bd%isd:bd%ied, bd%jsd:bd%jed)  ! q ghosted on input
@@ -1467,6 +1467,8 @@ endif
          fy2(i,j) = 0.5*(xv(i,j-1)+xv(i,j))*fy2(i,j)
       enddo
    enddo
+!   
+! [js:je is:ie]
 !
    do j=j1+1,j2-1
       do i=i1+1,i2-1
@@ -1717,8 +1719,8 @@ type(fv_grid_bounds_type), intent(IN) :: bd
  end subroutine copy_corners_for_udvd
 !===========================================
 !
-!FV3WAM-v1 of UFS-SWA: 
-!  2023 Valery Yudin CUA
+! UFSWAM-v1 of UFS-SWA: 
+!  2023-2026 Valery Yudin CUA
 ! accurate approximation for the u-v-w kinetic energy losses due to 2-nd or visocity
 !
 !===========================================
@@ -1857,6 +1859,7 @@ type(fv_grid_bounds_type), intent(IN) :: bd
       
    real x5(bd%isd:bd%ied,bd%jsd:bd%jed)
    real x6(bd%isd:bd%ied,bd%jsd:bd%jed)
+   
    real d1(bd%isd:bd%ied  ,bd%jsd:bd%jed+1)
    real d2(bd%isd:bd%ied+1,bd%jsd:bd%jed  )
    integer i, j, m, n, nt, i1, i2, j1, j2
@@ -1983,7 +1986,7 @@ type(fv_grid_bounds_type), intent(IN) :: bd
          dfy2(i,j) = fy2(i,j) * 0.5*(d2(i,j-1)+d2(i,j))	 
       enddo
    enddo
-! ------------------
+! ------------------Atm%flagstruct%ufswam_med
    do j=j1+1,j2
       do i=i1+1,i2-1
          uold = u(i,j)

@@ -62,7 +62,8 @@ endif()
 list(APPEND model_srcs
   model/a2b_edge.F90
   model/multi_gases.F90
-  model/molecular_diffusion.F90
+  model/fv_deepatm.F90  
+  model/molecular_diffusion.F90  
   model/boundary.F90
   model/dyn_core.F90
   model/fv_arrays.F90
@@ -77,6 +78,7 @@ list(APPEND model_srcs
   model/fv_tracer2d.F90
   model/fv_update_phys.F90
   model/sw_core.F90
+  model/dycore_dis_moleddy.F90    
   model/tp_core.F90
   model/nh_core.F90
   model/nh_utils.F90)

@@ -1,0 +1,68 @@
+Lists of i_packs in fv_dynamics.F90 and dy_core.F90
+!----------------------------
+!  #1 delp-pt
+!  #2 grav_var_h  newrad
+!  #3 divgd
+!  #4 zh-pkc
+!  #5 gz
+!  #6 rd_msp
+!  #7 w
+!  #8 u-v
+!  #9 uc-vc
+!  #10 q(1:nq)
+!  #11 qcon
+!  #12 cappa
+!  #13 kapad-delp1
+!  #14 daf_a  
+!  #15 rad_int
+!  #16-17 daf_du & daf_dv
+!---------------------------    
+#1  call start_group_halo_update(i_pack(1), delp, domain, complete=.false.)
+    call start_group_halo_update(i_pack(1), pt,   domain, complete=.true.)
+delp-pt    
+    
+#2    call start_group_halo_update(i_pack(2), grav_var_h, domain)  
+      call start_group_halo_update(i_pack(2), newrad,    domain) 
+ grav_var_h-newrad    
+      
+#3    call start_group_halo_update(i_pack(3), divgd, domain, position=CORNER)  dy_core_only
+ divgd
+
+#4    call start_group_halo_update(i_pack(4), zh ,  domain, complete=.false.)  dy_core_only
+zh-pkc                                              allocate( zh(isd:ied, jsd:jed, npz+1) )
+						    allocate(  pk3(isd:ied,jsd:jed,npz+1) )			    
+      call start_group_halo_update(i_pack(4), pkc,  domain, complete=.true.)
+      
+#5     call start_group_halo_update(i_pack(5), gz,  domain)                    dy_core_only
+ gz                                                  gz(bd%isd:bd%ied, bd%jsd:bd%jed, npz+1) 
+						       
+#6     call start_group_halo_update(i_pack(6), daf_a, domain)   fv_dyn
+ daf_a
+#7     call start_group_halo_update(i_pack(7), w, domain)       MED-fv_dyn/dyn_core
+ W
+#8     call start_group_halo_update(i_pack(8), u, v, domain, gridtype=DGRID_NE) fv/dyn_core after
+ U_V D
+#9     call start_group_halo_update(i_pack(9), uc, vc, domain, gridtype=CGRID_NE) after pgrad_c
+ UC_VC
+#10    start_group_halo_update(i_pack(10), q, domain)   fv/dyn_core
+ q[nq]
+#11    call start_group_halo_update(i_pack(11), q_con, domain)      fv/dyn_core
+ q_con
+#12    call start_group_halo_update(i_pack(12), cappa, domain)      fv_dyn (K_splt loop)
+ cappa
+#13    call start_group_halo_update(i_pack(13), kapad, domain)       fv_dyn
+       call start_group_halo_update(i_pack(13), dp1, domain)         fv_dyn  flagstruct%trdm2 > 1.e-4 
+ kapad-delp1      
+#14
+ call start_group_halo_update(i_pack(14), rd_msp, domain)  
+ rd_msp
+ 
+#15
+  call start_group_halo_update(i_pack(15),daf_du, domain)
+daf_du 
+#16
+  call start_group_halo_update(i_pack(15),daf_du, domain)  
+
+daf_dv      
+
+

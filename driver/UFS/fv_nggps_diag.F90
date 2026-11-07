@@ -215,7 +215,7 @@ contains
     kstt_tracer(:) = 0
     kend_tracer(:) = 0
 
-    if ( Atm(n)%flagstruct%molecular_diffusion ) then
+    if ( Atm(n)%flagstruct%molecular_diffusion.or.Atm(n)%flagstruct%ufswam_med) then
          vrange = (/ -830.,  830. /)  !< winds for wam
          wrange = (/ -300.,  300. /)  !< vertical wind for wam
          trange = (/  100., 3000. /)  !< temperature for wam

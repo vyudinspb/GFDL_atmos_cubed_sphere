@@ -1,0 +1,20 @@
+The standard nh_core version has been temporarily separated into two files
+ to work around an Intel bug in which "fast transcendentals" 
+ do not give run-to-run reproducibility 
+ for one subroutine inside of the non-hydrostatic extensions.
+ 
+ nh_core.F90
+ nh_utils.F90
+ 
+ Oct 2022 Oct 2026 
+ UFSWAM configuration for the deep atmosphere  (DATM) equations
+ with additional ufswam_med (molecular-eddy disipation sub-step
+ of FV3 dynamics
+ 
+ The variable molecular weight (MW), R/NW, Cp, Cv are variable
+ in the upper layers
+ 
+ "ufswam_datm" branch at  https://github.com/vyudinspb/GFDL_atmos_cubed_sphere
+ contain the latest Nov 2026 configuration of UFSWAM in the deep atmosphere formulation
+ with 1) variable gravity 2) radial vertical coordinate for dynamics (areas and volume)
+      3) complete coriolis force ; 4) other datm terms in the momentum equations 
