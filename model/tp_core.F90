@@ -1721,13 +1721,13 @@ type(fv_grid_bounds_type), intent(IN) :: bd
 !
 ! UFSWAM-v1 of UFS-SWA: 
 !  2023-2026 Valery Yudin CUA
-! accurate approximation for the u-v-w kinetic energy losses due to 2-nd or visocity
+! accurate approximation for the u-v-w kinetic energy losses due to 2-nd order visocity
 !
 !===========================================
  subroutine deln_flux_explm_wdis(nord,is,ie,js,je,npx,npy,damp,q, wdis, gridstruct,bd)
 !> Del-2 time split explicit damping for the cell-mean values (A grid)
 !------------------
-!> nord =  used for extra grid as side
+!> nord =0  used for extra grid as side
 !------------------
    type(fv_grid_bounds_type), intent(IN) :: bd
    integer, intent(in):: nord            !< del-n
@@ -1835,7 +1835,15 @@ type(fv_grid_bounds_type), intent(IN) :: bd
  end subroutine deln_flux_explm_wdis
  
   subroutine deln_flux_explm_udvd_dis(nord,is,ie,js,je,npx,npy,damp,u,v,udis, vdis,gridstruct,bd)
-!> Del-2 time split explicit damping for the cell-edge values (D grid) with losses Ekin: udis, vdis
+!  
+!> Del-2(nord=0) time split explicit damping for the cell-edge values (D grid) 
+!  viscous losses Ekin (udis, vdis) are computed using the FV-algoritm of the flux-form viscous Eqs.
+!   U*dU/dt = d/dx(U*K(dU/dx)-K[dU/dx]^2
+!  viscous positive heat:
+!      K[dU/dx]^2 = -d[U*U/2]/dt + d/dx([U*K](dU/dx)
+!    -d[U*U/2]/dt * dtstep = 1/2[Us*Us -Ue*Ue]= 1/2(Us+Ue)(Us-Ue)
+!    d/dx([U*K](dU/dx) = d/dx(K*d[U*U/2]/dx   analog of 
+!    d/dx(K(dU/dx)
 !------------------
 !> nord =  used for extra grid as side
 !------------------
